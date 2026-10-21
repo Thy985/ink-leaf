@@ -1,0 +1,106 @@
+{
+  "name": "inkstone-desktop",
+  "version": "0.3.0",
+  "description": "墨页 — 安静、本地优先的 Markdown 编辑器",
+  "author": "Inkstone",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "start": "npm run build:web && electron .",
+    "start:web": "npm run build:web && python3 -m http.server 4173 --bind 127.0.0.1 --directory web",
+    "test": "node --test web/model.test.js tests/*.test.cjs",
+    "check": "node --check desktop/main.cjs && node --check desktop/files.cjs && node --check desktop/preload.cjs && node --check web/app.js && node --check web/model.js && node --check web/renderer.js && node --check scripts/build-web.mjs",
+    "build:win": "npm run build:web && electron-builder --win nsis zip --x64",
+    "build:linux:test": "npm run build:web && electron-builder --linux dir --x64",
+    "test:desktop": "npm run build:web && node tests/desktop-e2e.cjs",
+    "test:keyboard": "npm run build:web && node tests/native-keyboard.cjs"
+  },
+  "devDependencies": {
+    "electron": "44.9.2",
+    "electron-builder": "26.15.3",
+    "playwright": "1.64.1",
+    "dompurify": "3.4.17",
+    "esbuild": "0.25.11",
+    "katex": "0.19.0",
+    "markdown-it": "14.3.3"
+  },
+  "build": {
+    "appId": "app.inkstone.editor",
+    "productName": "墨页",
+    "executableName": "Inkstone",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "web/**/*",
+      "!web/*.test.js",
+      "!web/renderer.js",
+      "package.json",
+      "LICENSE",
+      "licenses/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "artifactName": "Inkstone-${version}-Windows-${arch}.${ext}",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "墨页",
+      "artifactName": "Inkstone-${version}-Windows-${arch}-Setup.${ext}",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "deleteAppDataOnUninstall": false
+    },
+    "fileAssociations": [
+      {
+        "ext": "md",
+        "name": "Markdown 文档",
+        "description": "Markdown 文档",
+        "role": "Editor"
+      },
+      {
+        "ext": "markdown",
+        "name": "Markdown 文档",
+        "role": "Editor"
+      }
+    ],
+    "linux": {
+      "target": "dir",
+      "category": "Office"
+    },
+    "extraFiles": [
+      {
+        "from": "README.md",
+        "to": "使用说明.md"
+      },
+      {
+        "from": "LICENSE",
+        "to": "LICENSE-ink-leaf.txt"
+      },
+      {
+        "from": "licenses",
+        "to": "licenses"
+      },
+      {
+        "from": "web/vendor/licenses.txt",
+        "to": "THIRD-PARTY-NOTICES.txt"
+      }
+    ]
+  },
+  "license": "MIT"
+}

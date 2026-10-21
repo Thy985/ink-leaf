@@ -1,0 +1,61 @@
+# 墨页 Windows v0.3
+
+一个安静、本地优先的 Markdown 桌面编辑器。编辑器与公式字体均内置，断网也能使用，不会把文档上传到服务器。
+
+## 安装或直接运行
+
+面向 **Windows 10 / 11，64 位 x64**。不支持 Windows 7 / 8，也不是 Windows ARM64 原生构建。
+
+- 安装版：运行 `Inkstone-0.3.0-Windows-x64-Setup.exe`，可选择安装目录，并创建桌面、开始菜单入口。不要求管理员安装。
+- 免安装版：将 `Inkstone-0.3.0-Windows-x64.zip` **完整解压到独立目录**，运行其中的 `Inkstone.exe`。不能只拷贝 exe；同目录的 DLL、resources 等也是程序所需文件。
+
+这是**未签名的开发预览版**，不是已通过 Windows 认证的正式发行。Windows 可能显示“未知发布者”或 SmartScreen 提醒；请核对文件来源与随附 SHA-256 校验值，按你自己的安全设置决定是否运行。
+
+## 写作与文件
+
+延续网页 v0.3：段落实时预览、标题大纲、表格及列对齐、分割线、多级列表与任务、转义字符与 HTML 实体、安全 HTML、行内和块级 LaTeX 公式。另有查找替换、撤销重做、源文视图、深浅主题与专注模式。
+
+Windows 版使用原生窗口、菜单和文件对话框。打开文件后，“保存”会写回原文件；“另存为”生成新文件并将后续保存目标切换过去。点击顶部文件名等同于另存为，不会重命名或删除原文件。新建、打开其他文件和关闭前，会提供保存、不保存、取消的选择。
+
+打开 `.md`、`.markdown`、`.txt`，支持不超过 10 MB 的 UTF-8 / UTF-8 BOM 文本。编辑器内部使用 LF 换行；保存已打开文档时保留 BOM 与 CRLF 换行方式。GBK、UTF-16 等编码会被明确拒绝，请先转成 UTF-8。文件在磁盘被其他程序修改时，会提醒覆盖、另存为或取消。
+
+尚未保存的修改会保留本机恢复草稿，意外退出后可恢复。**恢复草稿不是文件保存或备份的替代品**；重要文档请使用 Ctrl+S，建议另行备份。恢复数据在应用用户数据目录内；正常关闭并明确选择“不保存”的修改会被丢弃。Windows 下通常位于 `%APPDATA%\inkstone-desktop\recovery.json`，具体目录以系统应用数据位置为准。便携包的程序文件可以移动，但用户草稿仍在当前 Windows 用户的应用数据目录内。
+
+## 常用快捷键
+
+| 操作 | 快捷键 |
+| --- | --- |
+| 新建 / 打开 | Ctrl+N / Ctrl+O |
+| 保存 / 另存为 | Ctrl+S / Ctrl+Shift+S |
+| 撤销 / 重做 | Ctrl+Z / Ctrl+Y 或 Ctrl+Shift+Z |
+| 粗体 / 斜体 / 链接 | Ctrl+B / Ctrl+I / Ctrl+K |
+| 查找 / 替换 | Ctrl+F / Ctrl+H |
+| 源文视图 | Ctrl+/ |
+| 专注 / 全屏 | F8 / F11 |
+| 退出专注、关闭查找 | Esc |
+| 列表缩进、退级 / 表格跳格 | Tab / Shift+Tab |
+
+Ctrl+点击文档中的 http/https 链接，会在系统默认浏览器打开。文档 HTML 不允许脚本、事件、任意样式、iframe 或表单执行。
+
+## 当前边界
+
+复杂块采用“点击编辑 Markdown 原文、离开后恢复预览”，并非表格单元格内完全所见即所得。不含图片插入、代码语法高亮、云同步、自动升级或完整 CommonMark/LaTeX 支持。
+
+此前预览产物通过 Linux 环境交叉构建；本仓库的共享源码布局需重新构建产物，并以 Electron Linux 运行时进行文件/窗口集成回归；**尚未在真实 Windows 机器完成安装、文件关联、SmartScreen 和中文输入法实测**。请先用测试文档试运行，再用于重要文件。
+
+## 源码构建
+
+需要 Node.js 22 或更新的受支持版本与 npm。Windows 下打开仓库根目录：
+
+```powershell
+npm ci
+npm start
+npm test
+npm run build:win
+```
+
+如环境阻止依赖安装脚本，请按 npm 提示允许 Electron 的运行时下载脚本，或执行 `node node_modules/electron/install.js`。产物在 `dist/`。开发调试可用 `INKSTONE_USER_DATA` 指定独立恢复草稿目录。
+
+主要目录：`web/` 为网页与桌面共用的 v0.3 编辑器，`desktop/` 为原生窗口与受限文件桥，`tests/` 为文件层与桌面回归。第三方资源通过 `npm run build:web` 生成。此源码版本不包含预生成品牌图标，打包使用 Electron 默认图标。
+
+第三方组件许可见 `web/vendor/licenses.txt`；Electron / Chromium 的许可随安装目录分发。本仓库第一方源码与文档适用根目录 MIT LICENSE；第三方组件保留各自版权与许可证，不重新授权。

@@ -1,0 +1,69 @@
+# 墨页 · ink-leaf
+
+安静、本地优先的 Markdown 编辑器，包含 Web v0.3 与 Windows 桌面预览版。网页与桌面共用 `web/` 内的编辑、解析、样式和渲染源码；桌面通过受限桥接提供本地文件操作，不维护第二份编辑器副本。
+
+支持标题大纲、段落实时预览、表格及对齐、多级列表与任务、分割线、转义、安全 HTML、本地 KaTeX 公式、查找替换、撤销重做、主题与专注模式。复杂块点击后编辑原文，离开后恢复预览，不是完整的所见即所得表格编辑器。
+
+## 从源码运行
+
+需要 Node.js 22 或更新的受支持版本、npm；网页本地服务器与网页回归另需 Python 3。
+
+```sh
+npm ci
+npm run start:web
+```
+
+访问 `http://127.0.0.1:4173/`。构建所需依赖首次下载后，运行时不依赖 CDN。网页草稿只保存在当前浏览器、当前网址；“保存”下载新 Markdown 文件，不覆盖原文件。
+
+桌面开发预览：
+
+```sh
+npm start
+```
+
+若安装时禁用了依赖安装脚本，需先执行 `node node_modules/electron/install.js` 下载 Electron。桌面版目标为 Windows 10/11 x64，Linux 仅作为集成回归环境，不代表 Windows 已实测。
+
+## 测试与构建
+
+```sh
+npm run check
+npm test
+npm run build:web
+npm run test:desktop
+npm run build:win
+```
+
+Windows 安装包和便携包输出到 `dist/`。当前未配置代码签名；不应视作已通过 Windows 认证的正式发行。源码提交不含安装器、发布产物或预生成图标；打包使用 Electron 默认图标。Windows 构建建议在 Windows 主机完成；跨平台构建可能另需 Wine 等工具。
+
+Linux 无图形会话时运行桌面测试：`xvfb-run -a npm run test:desktop`。原生 X11 键盘回归另需 `xdotool`，命令为 `xvfb-run -a npm run test:keyboard`，这不等同于 Windows 键盘和输入法验证。
+
+网页回归需 Python Playwright 与 Chromium。先执行 `python3 -m pip install -r tests/web/requirements.txt`，安装 Playwright Chromium（`python3 -m playwright install chromium`），保持 `npm run start:web` 运行，再分别执行：
+
+```sh
+python3 tests/web/smoke_test.py
+python3 tests/web/advanced_test.py
+python3 tests/web/controls_test.py
+```
+
+可用 `CHROMIUM_PATH` 指定浏览器、`INKSTONE_WEB_URL` 指定测试网址。测试输出在忽略目录 `test-results/`，不进入源码提交。
+
+## 目录
+
+- `web/`：共享编辑器、文档模型和渲染入口 `renderer.js`。
+- `desktop/`：Electron 窗口、原生菜单、受限 IPC 和本地文件层。
+- `scripts/build-web.mjs`：由锁定依赖生成 `web/vendor/`，包含渲染器、公式样式、字体和上游许可文本。该目录不纳入 Git。
+- `tests/`：文件层、桌面集成、原生键盘与网页回归。
+- `docs/windows.md`：桌面文件行为、快捷键与已知限制。
+- `licenses/`：原有第三方告知文本，保留其原始版权与许可。
+
+## 数据安全与限制
+
+桌面只接受不超过 10 MB 的 UTF-8 / UTF-8 BOM `.md`、`.markdown`、`.txt`，保存时保留已打开文件的 BOM 和换行方式。磁盘内容变化会提示冲突。写入临时文件后尝试替换目标；替换失败时保留原文件并报错，不以删除原文件作为回退。恢复草稿也不会先删除旧草稿；请始终使用 Ctrl+S，并为重要文件另行备份。此策略不承诺断电后的磁盘持久化，也不能消除其他进程同时写入的竞态。
+
+文档内容不上传服务器；渲染层关闭 Node 集成并启用隔离沙箱。HTML 经过过滤，不执行脚本、表单或嵌入媒体。不含图片插入、语法高亮、云同步、自动升级或完整 CommonMark/LaTeX 支持。真实 Windows 安装、文件关联、SmartScreen 和中文输入法仍需设备验证。
+
+## 许可证
+
+本仓库第一方源码与文档适用根目录 [MIT LICENSE](LICENSE)，保留仓库原有版权声明。npm 的 `private: true` 只是防止误发布到 npm，不限制 MIT 授权。
+
+第三方依赖、字体及运行时仍按各自许可证使用，不因项目采用 MIT 而重新授权。原有告知见 [licenses/third-party-original.txt](licenses/third-party-original.txt)；构建同时从实际安装的上游依赖复制完整许可到 `web/vendor/licenses.txt`，覆盖渲染依赖及其传递依赖。打包附带项目 LICENSE、第三方告知与 Electron/Chromium 自带许可证。分发时不得移除这些文件。
