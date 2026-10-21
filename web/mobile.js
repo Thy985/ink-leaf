@@ -1,5 +1,6 @@
 // Shared editor stays platform-independent; only this adapter knows the Android bridge.
 export const isAndroid = typeof window.InkLeafAndroid?.postMessage === 'function';
+export const compactViewport = '(max-width: 640px), (max-width: 960px) and (max-height: 480px)';
 const pending = new Map();
 let sequence = 0;
 window.addEventListener('inkleaf-native-result', ({ detail }) => {
@@ -25,7 +26,7 @@ export function installMobileUI() {
   const root = document.documentElement;
   const toggle = document.getElementById('sidebar-toggle');
   const scrim = document.getElementById('outline-scrim');
-  const mobile = matchMedia('(max-width: 640px)');
+  const mobile = matchMedia(compactViewport);
   const closeOutline = () => {
     document.body.classList.remove('mobile-outline');
     toggle.setAttribute('aria-expanded', String(!mobile.matches && !document.body.classList.contains('no-sidebar')));
@@ -45,7 +46,6 @@ export function installMobileUI() {
       if (viewport && viewport.scale !== 1) return;
       root.style.setProperty('--app-height', `${viewport?.height || window.innerHeight}px`);
       root.style.setProperty('--viewport-top', `${viewport?.offsetTop || 0}px`);
-      root.style.setProperty('--toolbar-secondary-top', `${document.querySelector('.topbar').getBoundingClientRect().bottom + 50}px`);
     });
   };
   window.visualViewport?.addEventListener('resize', resize);

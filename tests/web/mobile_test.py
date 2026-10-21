@@ -59,8 +59,31 @@ def native_result(page, detail):
 
 def assert_no_horizontal_overflow(page, width, height):
     page.set_viewport_size({"width": width, "height": height})
-    page.wait_for_timeout(80)
+    settle_layout(page)
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (width, page.evaluate("document.documentElement.scrollWidth"))
+
+
+def settle_layout(page):
+    # The mobile adapter batches viewport/ResizeObserver work through rAF.
+    page.wait_for_function("""() => new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""")
+    page.wait_for_timeout(30)
+
+
+def assert_no_body_overflow(page):
+    dimensions = page.evaluate("""() => ({
+        bodyWidth: document.body.scrollWidth,
+        bodyHeight: document.body.scrollHeight,
+        htmlWidth: document.documentElement.scrollWidth,
+        htmlHeight: document.documentElement.scrollHeight,
+        width: innerWidth,
+        height: innerHeight,
+    })""")
+    assert dimensions["bodyWidth"] <= dimensions["width"]
+    assert dimensions["htmlWidth"] <= dimensions["width"]
+    assert dimensions["bodyHeight"] <= dimensions["height"], dimensions
+    assert dimensions["htmlHeight"] <= dimensions["height"], dimensions
 
 
 def run():
@@ -103,6 +126,72 @@ def run():
                     if box is not None:
                         assert box["height"] >= 44, (selector, i, box)
         passed("主要文件/格式/大纲触控目标至少 44px")
+
+        # Mobile toolbar is two rows: the format row scrolls horizontally, while
+        # the action row remains static.  Wait for the adapter's rAF/ResizeObserver
+        # pass before measuring after every viewport change.
+        for width, height in ((320, 844), (360, 844), (393, 844), (412, 844), (393, 520), (844, 412)):
+            page.set_viewport_size({"width": width, "height": height})
+            settle_layout(page)
+            toolbar = page.locator(".toolbar").bounding_box()
+            assert toolbar and toolbar["y"] + toolbar["height"] <= 190, (width, height, toolbar)
+            assert not page.locator(".paper-label").is_visible(), (width, height)
+            editor_box = page.locator("#editor").bounding_box()
+            assert editor_box and editor_box["y"] <= 190, (width, height, editor_box)
+            assert_no_body_overflow(page)
+        page.set_viewport_size({"width": 320, "height": 844})
+        settle_layout(page)
+        format_tools = page.locator(".format-tools")
+        scroll_metrics = format_tools.evaluate("""el => {
+            const before = {scrollWidth: el.scrollWidth, clientWidth: el.clientWidth};
+            el.scrollLeft = el.scrollWidth;
+            const last = [...el.querySelectorAll('button')].at(-1);
+            const box = last?.getBoundingClientRect();
+            return {before, scrollLeft: el.scrollLeft, lastLeft: box?.left, lastRight: box?.right};
+        }""")
+        assert scroll_metrics["before"]["scrollWidth"] > scroll_metrics["before"]["clientWidth"], scroll_metrics
+        assert scroll_metrics["scrollLeft"] > 0, scroll_metrics
+        assert scroll_metrics["lastLeft"] >= 0, scroll_metrics
+        assert scroll_metrics["lastRight"] <= 320 + 1, scroll_metrics
+        for i in range(page.locator(".format-tools button").count()):
+            box = page.locator(".format-tools button").nth(i).bounding_box()
+            assert box and box["height"] >= 44 and box["width"] >= 44, (i, box)
+        toolbar_end = page.locator(".toolbar-end").bounding_box()
+        assert toolbar_end and toolbar_end["y"] >= 0 and toolbar_end["y"] + toolbar_end["height"] <= 844
+        page.set_viewport_size({"width": 393, "height": 844})
+        settle_layout(page)
+        assert_no_body_overflow(page)
+        passed("移动工具栏双行布局、横向可达触控目标、窄屏/键盘/横屏无 body 溢出")
+
+        # Focus mode keeps the document byte-for-byte unchanged and has all
+        # exits available: button, Escape, and the Android back event.
+        source_set(page, "# 原文\n\n正文 unchanged")
+        original = markdown(page)
+        assert page.locator("#focus-toggle").inner_text() == "沉浸写作"
+        page.locator("#focus-toggle").click()
+        settle_layout(page)
+        assert page.locator("body").evaluate("e => e.classList.contains('focus-mode')")
+        assert page.locator("#focus-toggle").get_attribute("aria-pressed") == "true"
+        assert markdown(page) == original
+        assert page.locator("#exit-focus").is_visible()
+        exit_box = page.locator("#exit-focus").bounding_box()
+        assert page.locator("#exit-focus").inner_text().startswith("退出沉浸")
+        assert exit_box and exit_box["width"] >= 44 and exit_box["height"] >= 44
+        assert 0 <= exit_box["x"] <= 393 - exit_box["width"]
+        assert 0 <= exit_box["y"] <= 844 - exit_box["height"]
+        for selector in (".topbar", ".toolbar", ".sidebar", ".page-end", "footer"):
+            if page.locator(selector).count():
+                assert not page.locator(selector).is_visible(), selector
+        page.locator("#exit-focus").click()
+        assert not page.locator("body").evaluate("e => e.classList.contains('focus-mode')")
+        page.locator("#focus-toggle").click()
+        page.keyboard.press("Escape")
+        assert not page.locator("body").evaluate("e => e.classList.contains('focus-mode')")
+        page.locator("#focus-toggle").click()
+        page.evaluate("window.dispatchEvent(new Event('inkleaf-back'))")
+        assert not page.locator("body").evaluate("e => e.classList.contains('focus-mode')")
+        assert markdown(page) == original
+        passed("沉浸写作/退出沉浸与按钮、Escape、inkleaf-back 退出且原文不变")
 
         source_set(page, "# 第一章\n\n## 第二章\n\n正文")
         page.locator("#sidebar-toggle").click()
@@ -154,6 +243,17 @@ def run():
           return {model: window.inkstone.getMarkdown(), composing: window.inkstone.isComposing};
         }""")
         assert during == {"model": "源码", "composing": True}, during
+        page.locator("#focus-toggle").click()
+        assert page.locator("#source").evaluate("el => el === document.activeElement")
+        assert markdown(page) == "源码" and page.evaluate("window.inkstone.isComposing")
+        page.set_viewport_size({"width": 393, "height": 360})
+        settle_layout(page)
+        assert_no_body_overflow(page)
+        assert page.locator("#exit-focus").is_visible()
+        page.locator("#exit-focus").click()
+        assert page.locator("#source").evaluate("el => el === document.activeElement")
+        assert page.locator("#source").input_value() == "源码中"
+        page.set_viewport_size({"width": 393, "height": 844})
         page.evaluate("""() => {
           const s = document.getElementById('source');
           s.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true, data: '中'}));
@@ -162,7 +262,7 @@ def run():
         page.wait_for_timeout(30)
         assert markdown(page) == "源码中"
         assert page.evaluate("window.__sourceInputs") in (2, 3)  # native final input plus optional app fallback; model must commit once
-        passed("源码模式 compositionstart/update/end：中途不 commit、最终 input 不重复")
+        passed("源码模式组合输入切换沉浸保留焦点与未提交 DOM，缩小视口无溢出，最终 input 不重复")
 
         source_set(page, "富文本")
         page.locator("#source-toggle").click()
@@ -184,6 +284,25 @@ def run():
         assert markdown(page) == "富文本中"
         assert page.evaluate("window.__richInputs") == 2
         passed("富文本 composition 与最终 input 同样只产生一次模型提交")
+
+        page.locator("#editor").focus()
+        page.keyboard.press("Control+End")
+        selection_before = page.evaluate("getSelection().anchorOffset")
+        page.locator("#focus-toggle").click()
+        assert page.locator("#editor").evaluate("el => el === document.activeElement")
+        assert page.evaluate("getSelection().anchorOffset") == selection_before
+        # The existing editor coalesces typing within 750ms, including IME input.
+        # Start a distinct typing transaction, rather than changing that contract.
+        page.wait_for_timeout(800)
+        page.keyboard.insert_text("，沉浸续写")
+        assert markdown(page) == "富文本中，沉浸续写"
+        page.locator("#exit-focus").click()
+        assert page.locator("#editor").evaluate("el => el === document.activeElement")
+        page.keyboard.press("Control+z")
+        assert markdown(page) == "富文本中", repr(markdown(page))
+        page.keyboard.press("Control+Shift+z")
+        assert markdown(page) == "富文本中，沉浸续写"
+        passed("富文本沉浸切换保留焦点与光标，可续写且退出后撤销不丢失")
 
         # Flush both lifecycle paths synchronously, including the composition DOM path.
         source_set(page, "立即落盘")
@@ -247,6 +366,7 @@ def run():
         native_result(native, {"id": request["id"], "error": "写入失败"})
         native.wait_for_timeout(20)
         assert native.locator("#dirty").inner_text() == "•"
+        assert {entry["action"] for entry in native.evaluate("window.__nativeRequests")} <= {"open", "export"}
         passed("Android export 取消/失败不清 dirty，成功按 snapshot 保存且保留请求后编辑")
 
         assert not errors, errors

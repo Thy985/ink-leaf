@@ -1,4 +1,4 @@
-import { isAndroid, nativeFile, installMobileUI } from './mobile.js';
+import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobile.js';
 import { parseBlocks, serialize, renderInline } from './model.js';
 import { previewMarkdown, needsPreview } from './vendor/renderer.js';
 
@@ -453,7 +453,7 @@ document.querySelectorAll('[data-command]').forEach((button) => {
   button.addEventListener('click', () => format(button.dataset.command));
 });
 $('sidebar-toggle').onclick = () => {
-  if (matchMedia('(max-width: 640px)').matches) {
+  if (matchMedia(compactViewport).matches) {
     document.body.classList.remove('no-sidebar');
     const open = document.body.classList.toggle('mobile-outline');
     $('sidebar-toggle').setAttribute('aria-expanded', String(open));
@@ -603,10 +603,25 @@ function focusMode(on) {
   document.body.classList.toggle('focus-mode', on);
   $('exit-focus').hidden = !on;
   $('focus-toggle').setAttribute('aria-pressed', String(on));
-  if (on) { $('find-panel').hidden = true; $('help').hidden = true; $('find-toggle').setAttribute('aria-expanded', 'false'); $('help-toggle').setAttribute('aria-expanded', 'false'); }
+  if (on) {
+    document.body.classList.remove('mobile-outline');
+    $('sidebar-toggle').setAttribute('aria-expanded', 'false');
+    $('find-panel').hidden = true; $('help').hidden = true;
+    $('find-toggle').setAttribute('aria-expanded', 'false'); $('help-toggle').setAttribute('aria-expanded', 'false');
+  } else {
+    $('sidebar-toggle').setAttribute('aria-expanded', String(!matchMedia(compactViewport).matches && !document.body.classList.contains('no-sidebar')));
+  }
+  // Keyboard activation must not leave focus on a now-hidden control.
+  // Pointer activation retains the live editing selection and IME untouched.
+  if (document.activeElement === $(on ? 'focus-toggle' : 'exit-focus')) {
+    (sourceMode ? source : editor).focus({ preventScroll: true });
+  }
 }
 $('focus-toggle').onclick = () => focusMode(!document.body.classList.contains('focus-mode'));
 $('exit-focus').onclick = () => focusMode(false);
+for (const id of ['focus-toggle', 'exit-focus']) {
+  $(id).addEventListener('pointerdown', event => event.preventDefault());
+}
 for (const id of ['undo', 'redo']) {
   $(id).onpointerdown = (e) => { beforeSelection = selection() || beforeSelection; e.preventDefault(); };
   $(id).onmousedown = (e) => e.preventDefault();

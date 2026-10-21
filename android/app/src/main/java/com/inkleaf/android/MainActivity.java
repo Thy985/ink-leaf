@@ -64,7 +64,9 @@ public final class MainActivity extends Activity {
             Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
             int keyboard = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
             root.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, keyboard));
-            return insets;
+            // The root owns these insets. Do not let WebView apply the same
+            // system-bar / IME space again via its viewport safe-area values.
+            return WindowInsetsCompat.CONSUMED;
         });
         ViewCompat.requestApplyInsets(root);
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {

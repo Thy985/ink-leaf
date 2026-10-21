@@ -25,12 +25,14 @@
 </aside>
 <main class="main">
 <div class="toolbar" role="toolbar" aria-label="Markdown 格式">
+<div class="format-tools" role="group" aria-label="格式工具（可横向滑动）">
 <div class="toolbar-group"><button id="undo" title="撤销 Ctrl/⌘ Z" aria-label="撤销">↶</button><button id="redo" title="重做 Ctrl/⌘ Shift Z" aria-label="重做">↷</button></div>
 <div class="toolbar-group"><button data-command="h1" title="一级标题">H₁</button><button data-command="h2" title="二级标题">H₂</button><button data-command="bold" title="粗体 Ctrl/⌘ B"><b>B</b></button><button data-command="italic" title="斜体 Ctrl/⌘ I"><i>I</i></button><button data-command="strike" title="删除线"><s>S</s></button></div>
 <div class="toolbar-group"><button data-command="list" title="无序列表">☷</button><button data-command="ordered" title="有序列表">1.</button><button data-command="task" title="任务清单">☑</button><button data-command="quote" title="引用">❞</button><button data-command="code" title="围栏代码">&lt;/&gt;</button><button data-command="link" title="插入链接 Ctrl/⌘ K" aria-label="插入链接">↗</button></div>
 <div class="toolbar-group touch-indent"><button data-command="outdent" title="减少缩进" aria-label="减少缩进">⇤</button><button data-command="indent" title="增加缩进或下一个表格单元格" aria-label="增加缩进或下一个表格单元格">⇥</button></div>
 <div class="toolbar-group insert-tools"><button data-command="table" title="插入表格">表格</button><button data-command="hr" title="插入分割线">—</button><button data-command="math" title="插入块公式">公式</button><button data-command="html" title="插入安全 HTML">HTML</button></div>
-<div class="toolbar-end"><button id="find-toggle" title="查找替换 Ctrl/⌘ F" aria-expanded="false">查找</button><button id="source-toggle" aria-pressed="false" title="切换源码视图">源文</button><button id="focus-toggle" title="专注模式（Esc 退出）" aria-pressed="false">专注</button><button id="theme-toggle" title="切换深浅色" aria-label="切换深浅色" aria-pressed="false">◐</button><button id="help-toggle" title="使用说明" aria-label="使用说明" aria-expanded="false">?</button></div>
+</div>
+<div class="toolbar-end"><button id="focus-toggle" title="沉浸写作：隐藏工具与状态栏，可点击退出沉浸或按 Esc 返回" aria-pressed="false">沉浸写作</button><button id="find-toggle" title="查找替换 Ctrl/⌘ F" aria-expanded="false">查找</button><button id="source-toggle" aria-pressed="false" title="切换源码视图">源文</button><button id="theme-toggle" title="切换深浅色" aria-label="切换深浅色" aria-pressed="false">◐</button><button id="help-toggle" title="使用说明" aria-label="使用说明" aria-expanded="false">?</button></div>
 </div>
 <section class="find-panel" id="find-panel" aria-label="查找与替换" hidden>
 <div class="find-row"><input id="find-input" type="search" placeholder="查找文字…" aria-label="查找文字" autocomplete="off"><span id="find-count" role="status">0 / 0</span><button id="find-prev" title="上一个 Shift+Enter" aria-label="上一个匹配">↑</button><button id="find-next" title="下一个 Enter" aria-label="下一个匹配">↓</button><label class="case-label"><input type="checkbox" id="find-case">区分大小写</label><button id="find-close" aria-label="关闭查找">×</button></div>
@@ -45,7 +47,7 @@
 <footer><div><span class="status-dot"></span><span id="status" aria-live="polite">草稿已就绪</span></div><div><span id="wordcount">0 字符</span><span id="readtime">约 1 分钟</span><span id="blockcount">0 块</span><span class="mvp">预览 v0.3</span></div></footer>
 </main>
 </div>
-<button id="exit-focus" hidden title="退出专注 Esc">退出专注 <kbd>Esc</kbd></button>
+<button id="exit-focus" hidden title="退出沉浸写作（也可按 Esc 或安卓返回键）">退出沉浸 <kbd>Esc</kbd></button>
 <dialog id="name-dialog"><form method="dialog"><h2 id="name-title">重命名文档</h2><p>名称仅用于下载文件，不会移动本地文件。</p><input id="name-input" aria-label="文档名称" required maxlength="100" autocomplete="off"><div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确定</button></div></form></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
