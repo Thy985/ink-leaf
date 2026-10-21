@@ -1,3 +1,4 @@
+import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobile.js';
 import { parseBlocks, serialize, renderInline } from './model.js';
 import { previewMarkdown, needsPreview } from './vendor/renderer.js';
 
@@ -10,11 +11,13 @@ let desktopReady = false;
 let desktopBusy = false;
 let desktopPath = null;
 const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.3**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。\n"
-  .replace('这里是 **墨页 v0.3**。', desktop ? '这里是 **墨页 Windows v0.3**。' : '这里是 **墨页 v0.3**。')
-  .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。');
+  .replace('这里是 **墨页 v0.3**。', desktop ? '这里是 **墨页 Windows v0.3**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.3**。')
+  .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : isAndroid ? '文字留在此设备。点「导入」打开 Markdown，点「导出 .md」通过系统文件选择器保存新文件。草稿在应用内自动保留；请定期导出备份。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。');
 let blocks = [];
 let activeId = null;
 let composing = false;
+let compositionTimer;
+let mobileBusy = false;
 let sourceMode = false;
 let filename = '初见.md';
 let savedText = SAMPLE;
@@ -222,7 +225,7 @@ function persist() {
   persistTimer = setTimeout(() => {
     try {
       localStorage.setItem(STORAGE, JSON.stringify({ text: text(), filename, savedText }));
-      $('status').textContent = '草稿已存于此浏览器';
+      $('status').textContent = isAndroid ? '草稿已保存在此设备' : '草稿已存于此浏览器';
     } catch { draftAvailable = false; $('status').textContent = '浏览器草稿不可用，请保存 .md'; }
   }, 250);
 }
@@ -254,6 +257,7 @@ function undo(redo = false) {
 }
 function format(command) {
   if (composing) return;
+  if (command === 'indent' || command === 'outdent') return indentSelection(command === 'outdent');
   const s = range();
   const value = text();
   if (['table','hr','math','html'].includes(command)) {
@@ -369,8 +373,13 @@ editor.addEventListener('input', (event) => {
   // Commit model synchronously; patch only changed keyed blocks and restore logical offsets.
   storeDOM();
 });
-editor.addEventListener('compositionstart', () => { composing = true; beforeSelection = selection(); clearTimeout(renderTimer); });
-editor.addEventListener('compositionend', () => { composing = false; storeDOM(); });
+editor.addEventListener('compositionstart', () => { clearTimeout(compositionTimer); composing = true; beforeSelection = selection(); clearTimeout(renderTimer); });
+editor.addEventListener('compositionend', () => {
+  // Android IMEs may emit a final input *after* compositionend. Keep their
+  // native DOM intact through that event, then commit once in the next task.
+  clearTimeout(compositionTimer);
+  compositionTimer = setTimeout(() => { composing = false; storeDOM(); }, 0);
+});
 editor.addEventListener('paste', (event) => {
   if (composing) return;
   event.preventDefault();
@@ -387,18 +396,10 @@ editor.addEventListener('copy', (event) => {
   if (s.start !== s.end) { event.preventDefault(); event.clipboardData.setData('text/plain', text().slice(s.start, s.end)); }
 });
 editor.addEventListener('drop', (event) => { event.preventDefault(); toast('请用「打开」导入 Markdown，或粘贴纯文本。'); });
-editor.addEventListener('keydown', (event) => {
-  if (composing || event.isComposing || event.keyCode === 229) return;
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
-    event.preventDefault();
-    restore({ a: 0, f: text().length });
-    return;
-  }
-  if (event.key === 'Tab') {
-    event.preventDefault();
+function indentSelection(outdent = false) {
     const s = range(), value = text(), p = locate(s.start);
     if (p.block.type === 'table') {
-      const direction = event.shiftKey ? -1 : 1;
+      const direction = outdent ? -1 : 1;
       let at = direction > 0 ? value.indexOf('|', s.end + 1) : value.lastIndexOf('|', s.start - 2);
       while (at >= 0 && value[at - 1] === '\\') at = direction > 0 ? value.indexOf('|', at + 1) : value.lastIndexOf('|', at - 1);
       const blockStart = s.start - p.offset;
@@ -409,11 +410,22 @@ editor.addEventListener('keydown', (event) => {
     let end = value.indexOf('\n', Math.max(s.start, s.end - 1)); if (end < 0) end = value.length;
     if (p.block.type === 'list' || s.start !== s.end) {
       const lines = value.slice(start, end).split('\n');
-      const deltas = lines.map(line => event.shiftKey ? -(line.match(/^(?: {1,2}|\t)/)?.[0].length || 0) : 2);
+      const deltas = lines.map(line => outdent ? -(line.match(/^(?: {1,2}|\t)/)?.[0].length || 0) : 2);
       const body = lines.map((line, i) => deltas[i] < 0 ? line.slice(-deltas[i]) : ' '.repeat(deltas[i]) + line).join('\n');
       const shiftA = deltas[0], shiftF = deltas.reduce((a,b) => a+b,0);
       apply(value.slice(0, start) + body + value.slice(end), { a: Math.max(start, s.start + shiftA), f: Math.max(start, s.end + shiftF) });
-    } else if (!event.shiftKey) replace(s.start, s.end, '  ');
+    } else if (!outdent) replace(s.start, s.end, '  ');
+}
+editor.addEventListener('keydown', (event) => {
+  if (composing || event.isComposing || event.keyCode === 229) return;
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+    event.preventDefault();
+    restore({ a: 0, f: text().length });
+    return;
+  }
+  if (event.key === 'Tab') {
+    event.preventDefault();
+    indentSelection(event.shiftKey);
   }
   if (event.key === 'ArrowDown') {
     const s = range(); const p = locate(s.f);
@@ -436,11 +448,12 @@ editor.addEventListener('blur', () => {
   if (!composing) { activeId = null; updateActive(); }
 });
 document.querySelectorAll('[data-command]').forEach((button) => {
+  button.addEventListener('pointerdown', (event) => { beforeSelection = selection() || beforeSelection; event.preventDefault(); });
   button.addEventListener('mousedown', (event) => event.preventDefault());
   button.addEventListener('click', () => format(button.dataset.command));
 });
 $('sidebar-toggle').onclick = () => {
-  if (matchMedia('(max-width: 640px)').matches) {
+  if (matchMedia(compactViewport).matches) {
     document.body.classList.remove('no-sidebar');
     const open = document.body.classList.toggle('mobile-outline');
     $('sidebar-toggle').setAttribute('aria-expanded', String(open));
@@ -466,9 +479,16 @@ source.addEventListener('input', () => {
   blocks = parseBlocks(source.value, blocks); currentText = text(); resizeSource(); updateUI(); persist();
 });
 source.addEventListener('beforeinput', () => { beforeSelection = selection(); });
-source.addEventListener('compositionstart', () => { composing = true; });
-source.addEventListener('compositionend', () => { composing = false; source.dispatchEvent(new Event('input')); });
-$('open').onclick = () => desktop ? runDesktop('open') : $('file-input').click();
+source.addEventListener('compositionstart', () => { clearTimeout(compositionTimer); beforeSelection = selection(); composing = true; });
+source.addEventListener('compositionend', () => {
+  clearTimeout(compositionTimer);
+  compositionTimer = setTimeout(() => { composing = false; source.dispatchEvent(new Event('input')); }, 0);
+});
+$('open').onclick = () => desktop ? runDesktop('open') : isAndroid ? runMobileFile('open') : openWebFile();
+function openWebFile() {
+  if (composing) { toast('请先完成输入法选词，再导入。'); return; }
+  $('file-input').click();
+}
 $('file-input').onchange = async (event) => {
   const file = event.target.files[0];
   event.target.value = '';
@@ -484,6 +504,7 @@ $('file-input').onchange = async (event) => {
 };
 function save() {
   if (desktop) return runDesktop('save');
+  if (isAndroid) return runMobileFile('export');
   if (composing) { toast('请先完成输入法选词，再保存。'); return; }
   const value = text();
   const blob = new Blob([value], { type: 'text/markdown;charset=utf-8' });
@@ -492,6 +513,48 @@ function save() {
   document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
   savedText = value; updateUI(); persist(); toast('已发起 .md 下载，请在浏览器下载中查看');
 }
+async function runMobileFile(action) {
+  if (mobileBusy) return;
+  if (composing) { toast('请先完成输入法选词，再进行文件操作'); return; }
+  if (action === 'open' && text() !== savedText && !window.confirm('当前文档有未导出修改。导入会替换本地草稿，是否继续？')) return;
+  const snapshot = text();
+  if (action === 'export' && new TextEncoder().encode(snapshot).length > 2 * 1024 * 1024) { toast('导出暂只支持 2 MB 以内的 UTF-8 文本。'); return; }
+  mobileBusy = true;
+  const freeze = action === 'open';
+  if (freeze) { editor.contentEditable = 'false'; source.readOnly = true; }
+  try {
+    const result = await nativeFile(action, { filename: /\.(md|markdown)$/i.test(filename) ? filename : filename.replace(/\.[^.]+$/, '') + '.md', text: snapshot });
+    if (result.canceled) return;
+    if (action === 'export') {
+      savedText = snapshot; updateUI(); persist(); toast('已导出到所选位置');
+    } else if (typeof result.text === 'string') {
+      const value = result.text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+      filename = result.filename || '导入文档.md'; savedText = value;
+      history = []; future = []; lastKind = ''; activeId = null;
+      beforeSelection = { a: 0, f: 0 };
+      // Import should not summon the keyboard behind the system file picker.
+      apply(value, null, 'open', false);
+      if (sourceMode) source.value = value;
+      toast(`已导入 ${filename}`);
+    }
+  } catch (error) { toast(error.message || '文件操作失败，内容仍保留在编辑器中'); }
+  finally {
+    mobileBusy = false;
+    if (freeze) { editor.contentEditable = 'true'; source.readOnly = false; }
+  }
+}
+
+// Android may stop the WebView without beforeunload. Flush synchronously when
+// backgrounded, including the visible IME DOM, without disrupting composition.
+function flushDraft() {
+  if (desktop) return;
+  clearTimeout(persistTimer);
+  const value = composing ? (sourceMode ? source.value : [...editor.children].map(readBlock).join('\n')) : text();
+  try { localStorage.setItem(STORAGE, JSON.stringify({ text: value, filename, savedText })); }
+  catch { $('status').textContent = '草稿保存失败，请导出 .md'; }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushDraft(); });
+window.addEventListener('pagehide', flushDraft);
 $('save').onclick = save;
 document.addEventListener('keydown', (event) => {
   if (composing || event.isComposing || !(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -512,7 +575,7 @@ document.addEventListener('keydown', (event) => {
   if (['s', 'o', 'b', 'i', 'z', 'y'].includes(key)) {
     event.preventDefault();
     if (key === 's') save();
-    else if (key === 'o') $('file-input').click();
+    else if (key === 'o') $('open').click();
     else if (key === 'b') format('bold');
     else if (key === 'i') format('italic');
     else undo(key === 'y' || event.shiftKey);
@@ -540,15 +603,32 @@ function focusMode(on) {
   document.body.classList.toggle('focus-mode', on);
   $('exit-focus').hidden = !on;
   $('focus-toggle').setAttribute('aria-pressed', String(on));
-  if (on) { $('find-panel').hidden = true; $('help').hidden = true; $('find-toggle').setAttribute('aria-expanded', 'false'); $('help-toggle').setAttribute('aria-expanded', 'false'); }
+  if (on) {
+    document.body.classList.remove('mobile-outline');
+    $('sidebar-toggle').setAttribute('aria-expanded', 'false');
+    $('find-panel').hidden = true; $('help').hidden = true;
+    $('find-toggle').setAttribute('aria-expanded', 'false'); $('help-toggle').setAttribute('aria-expanded', 'false');
+  } else {
+    $('sidebar-toggle').setAttribute('aria-expanded', String(!matchMedia(compactViewport).matches && !document.body.classList.contains('no-sidebar')));
+  }
+  // Keyboard activation must not leave focus on a now-hidden control.
+  // Pointer activation retains the live editing selection and IME untouched.
+  if (document.activeElement === $(on ? 'focus-toggle' : 'exit-focus')) {
+    (sourceMode ? source : editor).focus({ preventScroll: true });
+  }
 }
 $('focus-toggle').onclick = () => focusMode(!document.body.classList.contains('focus-mode'));
 $('exit-focus').onclick = () => focusMode(false);
+for (const id of ['focus-toggle', 'exit-focus']) {
+  $(id).addEventListener('pointerdown', event => event.preventDefault());
+}
 for (const id of ['undo', 'redo']) {
+  $(id).onpointerdown = (e) => { beforeSelection = selection() || beforeSelection; e.preventDefault(); };
   $(id).onmousedown = (e) => e.preventDefault();
   $(id).onclick = () => { if (!composing) undo(id === 'redo'); };
 }
 function openName(isNew) {
+  if (mobileBusy) { toast('请先完成系统文件操作'); return; }
   if (composing) { toast('请先完成输入法选词'); return; }
   if (isNew && text() !== savedText && !confirm('当前修改尚未导出。新建会替换本地草稿，建议先保存 .md。仍要继续吗？')) return;
   namingNew = isNew;
@@ -572,6 +652,7 @@ $('name-dialog').addEventListener('close', () => {
   } else { updateUI(); persist(); toast('已更新下载文件名'); }
 });
 editor.addEventListener('mousedown', (event) => {
+  if (composing) return;
   if (event.target.closest('.task-box')) event.preventDefault();
   const preview = event.target.closest('.block-preview');
   if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary')) {
@@ -780,4 +861,10 @@ if (desktop) {
   await runDesktop('restore');
   desktopReady = true;
   updateUI(); persist();
+}
+
+installMobileUI();
+if (isAndroid) {
+  document.querySelector('#name-dialog p').textContent = '名称用于导出新文件，不会覆盖导入的原文件。';
+  $('help').innerHTML = '<strong>墨页 Android · 文字留在此设备。</strong> 点按段落编辑，横向滑动工具栏使用格式；点左上角「墨」打开大纲。导入 UTF-8 的 .md / .markdown / .txt（不超过 2 MB），导出通过系统文件选择器保存新文件，不覆盖导入原件。<br><small>草稿自动保存在应用内，切到后台时立即保留；清除应用数据或卸载会删除草稿，请定期导出。中文输入法选词期间不重排编辑区，完成选词后可格式化、导入导出。真实设备的不同输入法仍需验证。内容不上传云端。<a href="vendor/licenses.txt" target="_blank" rel="noopener">开源组件许可</a></small>';
 }

@@ -21,3 +21,15 @@ __pycache__/
 private-claim.txt
 .DS_Store
 Thumbs.db
+
+# Android: generated assets come only from npm run sync:android.
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+android/app/src/main/assets/www/
+*.apk
+*.aab
+*.jks
+*.keystore
+.idea/
