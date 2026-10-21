@@ -9,3 +9,50 @@ button:disabled{opacity:.35;cursor:default}button:disabled:hover{background:none
 
 /* Preview 03: complex blocks keep a lossless source, and a separate safe view. */
 #editor .block-source{display:none}#editor .rich-block.active>.block-source{display:block;white-space:pre-wrap;font:14px/1.85 Consolas,"Liberation Mono",monospace;color:var(--ink);background:var(--wash);padding:10px 14px;border-radius:5px;overflow-wrap:anywhere}#editor .rich-block.active>.block-preview{display:none}#editor .block-preview{white-space:normal;cursor:text;min-height:1.95em;overflow-x:auto;max-width:100%}#editor .block-preview p{margin:0 0 .65em}#editor .block-preview p:last-child{margin-bottom:0}#editor .block-preview table{border-collapse:collapse;width:100%;font-family:Inter,"PingFang SC",sans-serif;font-size:14px;line-height:1.8;margin:10px 0;border:1px solid var(--line)}#editor .block-preview th,#editor .block-preview td{padding:11px 16px;border:1px solid var(--line);min-width:85px}#editor .block-preview th{background:var(--wash);font-weight:600;color:var(--accent)}#editor .block-preview tr:nth-child(even) td{background:color-mix(in srgb,var(--wash) 35%,var(--paper))}#editor .block-preview hr{border:0;border-top:1px solid #adb99f;margin:24px 0}#editor .hr{min-height:30px}#editor .math{padding:8px 0;margin:10px 0}#editor .katex-display{overflow-x:auto;overflow-y:hidden;padding:8px 0;margin:.5em 0}#editor .katex{font-size:1.12em}#editor .katex .base{white-space:nowrap}#editor .block-preview details{padding:13px 18px;border:1px solid var(--line);border-radius:5px;background:var(--wash)}#editor .block-preview summary{cursor:pointer;font-family:Inter,"PingFang SC",sans-serif;font-size:14px;color:var(--accent)}#editor .block-preview details[open] summary{margin-bottom:10px}#editor .block-preview mark{background:#e6e8ba;color:#434932;padding:1px 4px;border-radius:2px}#editor .block-preview kbd{font:12px Consolas,monospace;border:1px solid var(--line);background:var(--bg);padding:2px 5px;margin:0;color:var(--ink)}#editor .math-error{display:inline-block;color:#a34c3e;background:#a34c3e0c;border-bottom:1px dashed #a34c3e;font:13px/1.8 Consolas,monospace;white-space:pre-wrap}#editor .safe-empty{color:var(--muted);font:12px/1.8 sans-serif}#editor .list{margin-left:var(--indent,0px)}#editor .list.active{margin-left:0}#editor .list .block-preview ul,#editor .list .block-preview ol{list-style:none;padding:0;margin:0}#editor .list .block-preview li>p{margin:0}.insert-tools button{font-family:inherit;font-size:11px}.toolbar{flex-wrap:wrap;height:auto;min-height:68px;padding-top:7px;padding-bottom:7px}.toolbar-end{margin-left:auto}.toolbar-group{max-width:100%}#editor .table{margin:8px 0}#editor .html{margin:8px 0}@media(max-width:640px){.insert-tools{border-right:0}.toolbar{min-height:112px}.toolbar-end{width:100%}#editor .block-preview table{font-size:12px}#editor .block-preview th,#editor .block-preview td{padding:8px 10px;min-width:70px}#editor .rich-block.active>.block-source{font-size:12px;padding:9px}#editor .list{max-width:calc(100% - var(--indent,0px))}#editor .list.active{max-width:100%}}
+
+/* Android / touch: viewport follows the keyboard, never the document height. */
+#outline-scrim{display:none}
+@media(max-width:640px){
+  html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+  body{position:relative;top:var(--viewport-top,0px);height:var(--app-height,100dvh);display:flex;flex-direction:column}
+  .topbar{height:auto;min-height:62px;flex-shrink:0;flex-wrap:wrap;padding:calc(8px + env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));gap:4px}
+  .brand{min-width:44px;min-height:44px;justify-content:center}
+  .document-name{flex:1;max-width:none;min-height:44px;font-size:12px}
+  .file-actions{gap:2px;flex-shrink:0}
+  .file-actions button{min-height:44px;padding:8px;font-size:12px}
+  .workspace{height:auto;flex:1;min-height:0;position:relative}
+  .main{min-height:0}
+  .toolbar{height:auto;min-height:104px;padding:3px 8px;gap:2px;display:flex;flex-wrap:nowrap;align-content:normal;align-items:center;overflow-x:auto;overflow-y:hidden;padding-bottom:50px;position:relative;scrollbar-width:thin;touch-action:pan-x}
+  .toolbar-group{border-right:1px solid var(--line);padding-right:4px;gap:0}
+  .toolbar button{height:44px;min-width:44px;padding:5px 10px}
+  /* Secondary tools have their own fixed row; horizontal formatting scroll stays independent. */
+  .toolbar-end{position:fixed;left:env(safe-area-inset-left,0px);right:env(safe-area-inset-right,0px);top:var(--toolbar-secondary-top,calc(112px + env(safe-area-inset-top)));height:50px;width:auto;margin:0;justify-content:flex-end;align-items:center;padding:2px 8px;background:var(--paper);border-top:1px solid var(--line);border-bottom:1px solid var(--line);z-index:3;gap:0}
+  .toolbar-end button{min-width:44px;height:44px;padding:5px 10px;font-size:12px}
+  #help-toggle{height:44px;width:44px;border:0}
+  .paper-scroll{min-height:0;padding:20px max(18px,env(safe-area-inset-right)) 28px max(18px,env(safe-area-inset-left));overscroll-behavior:contain;scroll-padding-block:20px 48px;scroll-behavior:auto}
+  #editor,#source{font-size:16px;min-height:45vh}
+  #editor .heading[data-level="1"]{font-size:28px}
+  #editor .code{padding:12px;font-size:13px}
+  #editor .block-preview{max-width:100%;overflow-x:auto}
+  #editor .task-box::before{content:"";position:absolute;inset:-14px}
+  .paper-label{margin-bottom:20px;padding-bottom:16px}
+  footer{flex-shrink:0;min-height:32px;padding:6px max(12px,env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));gap:6px}
+  footer>div{min-width:0;gap:7px}#status{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:58vw}
+  #wordcount{white-space:nowrap}.status-dot{flex-shrink:0;margin-right:0}
+  .mobile-outline:not(.no-sidebar) .sidebar{top:0;bottom:0;width:min(290px,82vw);padding-bottom:env(safe-area-inset-bottom);overscroll-behavior:contain}
+  .mobile-outline #outline-scrim{display:block;position:absolute;inset:0;background:#101a1266;z-index:9;border-radius:0}
+  #outline button{min-height:44px;font-size:14px}
+  .find-panel{max-height:45%;overflow:auto}
+  .find-row>input{font-size:16px;height:44px;max-width:calc(100% - 145px);flex:1;min-width:100px}
+  .find-row button{min-height:44px;min-width:44px}.case-label{min-height:36px}
+  .find-row:last-child>input{max-width:100%}.find-row small{display:none}
+  dialog{max-height:calc(var(--app-height,100dvh) - 24px);overflow:auto;padding:20px}dialog input{font-size:16px}.dialog-actions button{min-height:44px}
+  .focus-mode .workspace{height:auto}.focus-mode .paper-scroll{padding-top:68px}.focus-mode #exit-focus{top:calc(8px + env(safe-area-inset-top));min-height:44px}
+  #toast{bottom:calc(42px + env(safe-area-inset-bottom));z-index:30}
+}
+@media(max-width:359px){.file-actions button{padding:6px;font-size:11px}.document-name{font-size:11px}.topbar{padding-left:4px;padding-right:4px}}
+@media(max-height:480px) and (max-width:640px){.paper-label,.page-end{display:none}.paper-scroll{padding-top:12px}.toolbar{min-height:96px}.toolbar-end{height:46px}footer{min-height:26px}}
+@media(pointer:coarse) and (min-width:641px){.toolbar button{min-height:44px;min-width:44px}.toolbar{min-height:104px}.file-actions button{min-height:44px}#outline button{min-height:44px}}
+
+.touch-indent{display:none}
+@media(pointer:coarse),(max-width:640px){.touch-indent{display:flex}}
