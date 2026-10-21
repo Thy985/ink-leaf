@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#f6f5f1"><meta name="description" content="墨页，一个安静的本地优先 Markdown 编辑器。即写即见，文字留在你的浏览器。">
+<title>墨页 · 把思绪写成一页</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='8' fill='%23526b52'/%3E%3Ctext x='20' y='28' text-anchor='middle' font-size='27' fill='white'%3E墨%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/katex.min.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+<button class="brand" id="sidebar-toggle" title="显示或隐藏大纲" aria-label="显示或隐藏大纲" aria-expanded="true"><span class="brand-mark">墨</span><span>墨页 <small>INKSTONE</small></span></button>
+<button class="document-name" id="rename" title="重命名文档"><span class="file-dot"></span><span id="filename">初见.md</span><span id="dirty" aria-label="未导出修改"></span></button>
+<div class="file-actions"><button id="new" title="新建文档">新建</button><button id="open">打开 <kbd>⌘ O</kbd></button><button id="save" class="primary">保存 .md <kbd>⌘ S</kbd></button></div>
+<input id="file-input" type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" hidden>
+</header>
+<div class="workspace">
+<aside class="sidebar">
+<div class="sidebar-heading">文档大纲 <span>OUTLINE</span></div>
+<nav id="outline" aria-label="文档大纲"></nav>
+<div class="sidebar-note"><span class="tiny-rule"></span><strong>只管落笔。</strong><p>语法在编辑时浮现，<br>离开后，让文字自己说话。</p><span class="local-label">本地草稿 · 无云端上传</span><div class="edition">WEB PREVIEW <span>03</span></div></div>
+</aside>
+<main class="main">
+<div class="toolbar" role="toolbar" aria-label="Markdown 格式">
+<div class="toolbar-group"><button id="undo" title="撤销 Ctrl/⌘ Z" aria-label="撤销">↶</button><button id="redo" title="重做 Ctrl/⌘ Shift Z" aria-label="重做">↷</button></div>
+<div class="toolbar-group"><button data-command="h1" title="一级标题">H₁</button><button data-command="h2" title="二级标题">H₂</button><button data-command="bold" title="粗体 Ctrl/⌘ B"><b>B</b></button><button data-command="italic" title="斜体 Ctrl/⌘ I"><i>I</i></button><button data-command="strike" title="删除线"><s>S</s></button></div>
+<div class="toolbar-group"><button data-command="list" title="无序列表">☷</button><button data-command="ordered" title="有序列表">1.</button><button data-command="task" title="任务清单">☑</button><button data-command="quote" title="引用">❞</button><button data-command="code" title="围栏代码">&lt;/&gt;</button><button data-command="link" title="插入链接 Ctrl/⌘ K" aria-label="插入链接">↗</button></div>
+<div class="toolbar-group insert-tools"><button data-command="table" title="插入表格">表格</button><button data-command="hr" title="插入分割线">—</button><button data-command="math" title="插入块公式">公式</button><button data-command="html" title="插入安全 HTML">HTML</button></div>
+<div class="toolbar-end"><button id="find-toggle" title="查找替换 Ctrl/⌘ F" aria-expanded="false">查找</button><button id="source-toggle" aria-pressed="false" title="切换源码视图">源文</button><button id="focus-toggle" title="专注模式（Esc 退出）" aria-pressed="false">专注</button><button id="theme-toggle" title="切换深浅色" aria-label="切换深浅色" aria-pressed="false">◐</button><button id="help-toggle" title="使用说明" aria-label="使用说明" aria-expanded="false">?</button></div>
+</div>
+<section class="find-panel" id="find-panel" aria-label="查找与替换" hidden>
+<div class="find-row"><input id="find-input" type="search" placeholder="查找文字…" aria-label="查找文字" autocomplete="off"><span id="find-count" role="status">0 / 0</span><button id="find-prev" title="上一个 Shift+Enter" aria-label="上一个匹配">↑</button><button id="find-next" title="下一个 Enter" aria-label="下一个匹配">↓</button><label class="case-label"><input type="checkbox" id="find-case">区分大小写</label><button id="find-close" aria-label="关闭查找">×</button></div>
+<div class="find-row"><input id="replace-input" placeholder="替换为…" aria-label="替换文字" autocomplete="off"><button id="replace-one">替换</button><button id="replace-all">全部替换</button><small>在 Markdown 原文中匹配</small></div>
+</section>
+<section class="help" id="help" hidden><strong>让想法流动，让语法退后。</strong> 点击段落显示语法；Enter 换段，列表 / 引用 / 任务自动续行，空项 Enter 退出；Shift+Enter 软换行。点击任务框切换完成状态；Ctrl/⌘ + 点击链接打开。Ctrl/⌘ F 查找，K 插入链接，B / I 格式，Z / Shift+Z 撤销重做，O 打开，S 下载。<br><small>草稿只在当前浏览器与此网址内自动保存，不能跨设备同步。保存 .md 是下载新文件，不会覆盖原文件。新增表格、分割线、多级列表、反斜杠转义、安全 HTML 与 KaTeX 公式。点击复杂块编辑原文，离开后预览；列表用 Tab / Shift+Tab 缩进与退级，空项 Enter 逐级退出；表格中 Tab / Shift+Tab 移动，Enter 续行。支持 $…$、\(…\)、$$…$$ 与 \[…\]。HTML 不执行脚本，移除样式、表单及嵌入媒体；不支持任意网页嵌入、图片与代码高亮，亦非完整 Typora / CommonMark。输入法需在真实设备上继续验证。<a href="vendor/licenses.txt" target="_blank" rel="noopener">开源组件许可</a></small></section>
+<div class="paper-scroll" id="paper-scroll"><div class="paper-label"><span>一页，一念。</span><span>MARKDOWN / LIVE EDITOR</span></div>
+<article id="editor" contenteditable="true" spellcheck="false" role="textbox" aria-label="Markdown 编辑区" aria-multiline="true"></article>
+<textarea id="source" aria-label="Markdown 源码" spellcheck="false" hidden></textarea>
+<div class="page-end"><span></span><i>文字的空间，也是思考的空间。</i><span></span></div>
+</div>
+<footer><div><span class="status-dot"></span><span id="status" aria-live="polite">草稿已就绪</span></div><div><span id="wordcount">0 字符</span><span id="readtime">约 1 分钟</span><span id="blockcount">0 块</span><span class="mvp">预览 v0.3</span></div></footer>
+</main>
+</div>
+<button id="exit-focus" hidden title="退出专注 Esc">退出专注 <kbd>Esc</kbd></button>
+<dialog id="name-dialog"><form method="dialog"><h2 id="name-title">重命名文档</h2><p>名称仅用于下载文件，不会移动本地文件。</p><input id="name-input" aria-label="文档名称" required maxlength="100" autocomplete="off"><div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确定</button></div></form></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
