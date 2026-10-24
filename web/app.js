@@ -109,6 +109,23 @@ function restore(sel, focus = true) {
   const [f, fo] = domPoint(sel.f);
   s.setBaseAndExtent(a, ao, f, fo);
 }
+function headingParts(block) {
+  if (block.style === 'setext') {
+    const lines = block.raw.split('\n');
+    const underline = lines.pop() ?? '';
+    return { content: lines.join('\n'), prefix: null, suffix: null, underline };
+  }
+  const prefix = block.raw.match(/^ {0,3}#{1,6}(?:[ \t]+|$)/)?.[0] || '';
+  const rest = block.raw.slice(prefix.length);
+  const suffix = rest.match(/[ \t]+#+[ \t]*$/)?.[0] || null;
+  return { content: suffix ? rest.slice(0, -suffix.length) : rest, prefix, suffix, underline: null };
+}
+
+function headingLabel(block) {
+  const { content } = headingParts(block);
+  return content.replace(/\n/g, ' ').replace(/[*_`~]/g, '').trim() || '未命名标题';
+}
+
 function decorate(block) {
   const raw = block.raw;
   if (needsPreview(block)) {
@@ -118,13 +135,19 @@ function decorate(block) {
       previewRaw = raw.replace(/^\s*(?:[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/, '');
       if (task) checkbox = `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${task[2].toLowerCase() === 'x'}" aria-label="切换任务完成状态" data-task="${block.id}"></button>`;
     }
-    if (block.type === 'heading') previewRaw = raw.replace(/^ {0,3}#{1,6}[ \t]+/, '');
+    if (block.type === 'heading') previewRaw = headingParts(block).content;
     if (block.type === 'quote') previewRaw = raw.replace(/^ {0,3}>[ \t]?/gm, '');
     const highlight = !(block.type === 'code' && block.id === activeId);
     return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type, { highlight })}</div>`;
   }
+  if (block.type === 'heading') {
+    const { content, prefix, suffix, underline } = headingParts(block);
+    return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') +
+      renderInline(content) +
+      (suffix ? `<span class="syntax">${esc(suffix)}</span>` : '') +
+      (underline !== null ? `<span class="syntax setext-underline">\n${esc(underline)}</span>` : '');
+  }
   let prefix = '';
-  if (block.type === 'heading') prefix = raw.match(/^ {0,3}#{1,6}(?:[ \t]+|$)/)?.[0] || '';
   if (block.type === 'list') prefix = raw.match(/^\s*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '';
   if (block.type === 'quote') prefix = raw.match(/^ {0,3}> ?/)?.[0] || '';
   const task = block.type === 'list' && raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]\s/);
@@ -199,7 +222,7 @@ function updateUI() {
   outline.replaceChildren();
   blocks.filter((b) => b.type === 'heading').forEach((b) => {
     const button = document.createElement('button');
-    button.textContent = b.raw.replace(/^\s*#{1,6}\s*/, '').replace(/[*_`]/g, '') || '未命名标题';
+    button.textContent = headingLabel(b);
     button.dataset.id = b.id;
     button.style.paddingLeft = `${11 + Math.min((b.level || 1) - 1, 3) * 11}px`;
     button.classList.toggle('active', b.id === activeId);
@@ -267,6 +290,22 @@ function format(command) {
   if (command === 'indent' || command === 'outdent') return indentSelection(command === 'outdent');
   const s = range();
   const value = text();
+  if ((command === 'h1' || command === 'h2') && s.start === s.end) {
+    const p = locate(s.start);
+    if (p.block.style === 'setext') {
+      const blockStart = s.start - p.offset;
+      const lines = p.block.raw.split('\n');
+      const last = lines.length - 1;
+      const mark = command === 'h1' ? '=' : '-';
+      lines[last] = lines[last].replace(/^(\s*)(=+|-+)(\s*)$/, (_, lead, marks, trail) => lead + mark.repeat(marks.length) + trail);
+      const raw = lines.join('\n');
+      apply(text().slice(0, blockStart) + raw + text().slice(blockStart + p.block.raw.length), {
+        a: blockStart + raw.length,
+        f: blockStart + raw.length,
+      });
+      return;
+    }
+  }
   if (['table','hr','math','html'].includes(command)) {
     const snippets = { table: '| 列一 | 列二 |\n| :--- | ---: |\n| 内容 | 内容 |', hr: '---', math: '$$\nE = mc^2\n$$', html: '<details>\n<summary>展开内容</summary>\n<p>在这里写内容</p>\n</details>' };
     const lead = s.start && value[s.start - 1] !== '\n' ? '\n\n' : '';
@@ -315,7 +354,16 @@ function format(command) {
 }
 function enter(soft = false) {
   const s = range();
-  const { block } = locate(s.start);
+  const { block, offset } = locate(s.start);
+  if (!soft && s.start === s.end && block.style === 'setext') {
+    const underline = block.raw.split('\n').pop() ?? '';
+    const contentLength = block.raw.length - underline.length - 1;
+    if (offset >= contentLength) {
+      const after = s.start - offset + block.raw.length;
+      replace(after, after, '\n\n');
+      return;
+    }
+  }
   if (['code','math','html'].includes(block.type) || soft) { replace(s.start, s.end, '\n'); return; }
   const value = text();
   const lineStart = value.lastIndexOf('\n', s.start - 1) + 1;

@@ -143,6 +143,59 @@ with sync_playwright() as playwright:
         cases.append("代码内容 XSS 防护")
         print("PASS", cases[-1], flush=True)
 
+        # --- setext headings ---
+        raw = "标题\n====\n\n二级\n---\n"
+        load(page, raw)
+        blur(page)
+        assert page.locator("#editor .heading").count() == 2
+        assert page.locator("#editor .heading").nth(0).inner_text() == "标题"
+        assert page.locator("#outline button").nth(0).inner_text() == "标题"
+        assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
+        assert markdown(page) == raw
+        page.locator("#editor .heading").nth(0).click()
+        assert page.locator("#editor .heading .setext-underline").nth(0).is_visible()
+        cases.append("Setext 标题显示、大纲与下划线激活")
+        print("PASS", cases[-1], flush=True)
+
+        load(page, "段落\n---\n\n---\n")
+        blur(page)
+        blocks = page.evaluate("window.inkstone.getBlocks()")
+        types = [block["type"] for block in blocks]
+        assert blocks[0]["type"] == "heading" and blocks[0]["level"] == 2
+        assert "hr" in types
+        assert markdown(page) == "段落\n---\n\n---\n"
+        cases.append("Setext 与分割线优先级")
+        print("PASS", cases[-1], flush=True)
+
+        load(page, "Title\n===")
+        caret(page, 0, 0)
+        page.locator('[data-command="h2"]').click()
+        assert markdown(page) == "Title\n---"
+        page.locator('[data-command="h1"]').click()
+        assert markdown(page) == "Title\n==="
+        caret(page, 0, len("Title"))
+        page.keyboard.press("Enter")
+        page.keyboard.insert_text("next")
+        assert markdown(page) == "Title\n===\n\nnext"
+        cases.append("Setext H1/H2 替换与末尾 Enter")
+        print("PASS", cases[-1], flush=True)
+
+        load(page, "## 标题 ##")
+        blur(page)
+        assert page.locator("#editor .heading").inner_text() == "标题"
+        assert page.locator("#outline button").inner_text() == "标题"
+        assert markdown(page) == "## 标题 ##"
+        cases.append("ATX 闭合井号显示与大纲")
+        print("PASS", cases[-1], flush=True)
+
+        load(page, "AT&amp;T\n===")
+        blur(page)
+        assert "AT&T" in page.locator("#editor .heading .block-preview").inner_text()
+        assert page.locator("#editor .block-preview hr").count() == 0
+        assert markdown(page) == "AT&amp;T\n==="
+        cases.append("含实体的 Setext 走富块路径")
+        print("PASS", cases[-1], flush=True)
+
         page.set_viewport_size({"width": 393, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         page.locator("#theme-toggle").click()

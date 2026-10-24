@@ -1,5 +1,11 @@
 /** Dependency-free Markdown block model used by Inkstone. */
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+const SETEXT_RE = /^ {0,3}(=+|-+)[ \t]*$/;
+
+function setextLevel(line) {
+  const match = SETEXT_RE.exec(line);
+  return match ? (match[1][0] === '=' ? 1 : 2) : 0;
+}
 const HEADING_RE = /^( {0,3})(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/;
 // Up to 3 spaces is CommonMark's top-level allowance; nested items may use any indentation.
 const LIST_RE = /^([ \t]*)(?:(\d+)([.)])|([-+*]))[ \t]+(.*)$/;
@@ -52,7 +58,19 @@ export function parseBlocks(text, previous=[]) {
     if(classifyHtml(line)){ const start=i++, htmlInfo=classifyHtml(line), tag=htmlInfo.tag; const close=new RegExp(`</${tag}\\s*>`,'i'); const selfClosing=/\/\s*>\s*$/.test(line)||HTML_VOID_TAGS.has(tag); if(!selfClosing&&!close.test(line)){ while(i<lines.length&&!close.test(lines[i])&&(tag==='script'||tag==='style'||!/^\s*$/.test(lines[i])))i++; if(i<lines.length&&close.test(lines[i]))i++; } parsed.push({...htmlInfo,raw:lines.slice(start,i).join('\n')}); continue; }
     if (tableLine(line) && i+1<lines.length && TABLE_SEPARATOR_RE.test(lines[i+1])) { const start=i; i+=2; while(i<lines.length&&tableLine(lines[i]))i++; const raw=lines.slice(start,i).join('\n'); parsed.push({...classify(raw),raw}); continue; }
     if (isSpecialLine(line,lines,i)) { const list=classifyList(line); if(list){ const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i))i++; parsed.push({...list,raw:lines.slice(start,i).join('\n')}); } else { parsed.push({...classify(line),raw:line}); i++; } continue; }
-    const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i))i++; parsed.push({type:'paragraph',raw:lines.slice(start,i).join('\n')});
+    const start = i;
+    let end = i;
+    while (end < lines.length && !/^\s*$/.test(lines[end]) && !isSpecialLine(lines[end], lines, end)) {
+      if (end > start && setextLevel(lines[end])) break;
+      end++;
+    }
+    if (end < lines.length && end > start && setextLevel(lines[end])) {
+      parsed.push({ type: 'heading', level: setextLevel(lines[end]), style: 'setext', raw: lines.slice(start, end + 1).join('\n') });
+      i = end + 1;
+      continue;
+    }
+    parsed.push({ type: 'paragraph', raw: lines.slice(start, end).join('\n') });
+    i = end;
   }
   const old=Array.isArray(previous)?previous:[], used=new Set(), serial={value:1}, previousIds=new Set(old.map(x=>x?.id).filter(Boolean)), matches=Array(parsed.length);
   parsed.forEach((b,n)=>{const x=old[n];if(x?.id&&x.raw===b.raw&&!used.has(x.id)){matches[n]=x.id;used.add(x.id);}});

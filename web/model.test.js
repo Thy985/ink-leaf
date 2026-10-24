@@ -171,3 +171,36 @@ test('recognizes a table immediately after a paragraph and normalizes tab list i
   assert.equal(blocks[2].depth, 2);
   assert.equal(serialize(blocks), source);
 });
+
+test('parses setext headings and preserves source', () => {
+  const source = 'Title\n=====\n\nSub *title*\n---\n\n---';
+  const blocks = parseBlocks(source);
+  assert.deepEqual(blocks.map(({ type, level, style }) => ({ type, level, style })), [
+    { type: 'heading', level: 1, style: 'setext' },
+    { type: 'blank', level: undefined, style: undefined },
+    { type: 'heading', level: 2, style: 'setext' },
+    { type: 'blank', level: undefined, style: undefined },
+    { type: 'hr', level: undefined, style: undefined },
+  ]);
+  assert.equal(blocks[0].raw, 'Title\n=====');
+  assert.equal(blocks[2].raw, 'Sub *title*\n---');
+  assert.equal(serialize(blocks), source);
+});
+
+test('parses multi-line setext headings', () => {
+  const source = 'First line\nsecond line\n===';
+  const block = parseBlocks(source)[0];
+  assert.equal(block.type, 'heading');
+  assert.equal(block.level, 1);
+  assert.equal(block.style, 'setext');
+  assert.equal(block.raw, source);
+});
+
+test('treats --- after a paragraph as setext but blank-preceded --- as hr', () => {
+  const blocks = parseBlocks('alpha\n---\n\nbeta\n\n---');
+  assert.equal(blocks[0].type, 'heading');
+  assert.equal(blocks[0].level, 2);
+  assert.equal(blocks[2].type, 'paragraph');
+  assert.equal(blocks[4].type, 'hr');
+  assert.equal(serialize(blocks), 'alpha\n---\n\nbeta\n\n---');
+});
