@@ -365,12 +365,24 @@ test('collects link reference definitions with their optional title', () => {
   assert.equal(ctx.links.get('docs').title, undefined);
 });
 
-test('renders a footnote reference as a numbered anchor and keeps the source in a syntax span', () => {
+test('exposes definition and reference block ids by footnote number', () => {
+  const blocks = parseBlocks('甲[^a] 乙[^b]\n\n[^a]: 一\n[^b]: 二\n[^c]: 三\n');
+  const ctx = buildDocContext(blocks);
+  const defA = blocks.find((b) => b.type === 'footnoteDef' && b.label === 'a');
+  const defC = blocks.find((b) => b.type === 'footnoteDef' && b.label === 'c');
+  const para = blocks.find((b) => b.type === 'paragraph');
+  assert.equal(ctx.defNumbers.get(defA.id), 1);
+  assert.equal(ctx.defNumbers.get(defC.id), undefined);
+  assert.deepEqual(ctx.byNumber.get(1), { defBlockId: defA.id, refBlockId: para.id });
+  assert.deepEqual([...ctx.byNumber.keys()], [1, 2]);
+});
+
+test('renders a footnote reference as an anchor whose number is generated, keeping DOM text equal to source', () => {
   const blocks = parseBlocks('See [^note] here\n\n[^note]: Body\n');
   const html = renderInline(blocks[0].raw, buildDocContext(blocks));
-  assert.match(html, /<sup><a href="#ink-fn-1">1<\/a><\/sup>/);
+  assert.match(html, /<sup class="fn-ref"><a href="#ink-fn-1" data-fn="1"[^>]*><\/a><\/sup>/);
   assert.ok(html.includes('<span class="syntax">[^note]<\/span>'));
-  assert.equal(blocks[0].raw, 'See [^note] here');
+  assert.equal(html.replace(/<[^>]+>/g, ''), 'See [^note] here');
 });
 
 test('repeated references to one footnote reuse its number', () => {
@@ -383,7 +395,7 @@ test('repeated references to one footnote reuse its number', () => {
 test('leaves unpaired, escaped and empty footnote references as plain text', () => {
   const blocks = parseBlocks('Undef [^nope], escaped \\[^a], and [^a] real\n\n[^a]: Body\n');
   const html = renderInline(blocks[0].raw, buildDocContext(blocks));
-  assert.equal((html.match(/<sup>/g) || []).length, 1);
+  assert.equal((html.match(/<sup\b/g) || []).length, 1);
   assert.ok(html.includes('[^nope]'));
   assert.ok(!html.includes('<a href="#ink-fn-2'));
 });

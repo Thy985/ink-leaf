@@ -1,5 +1,5 @@
 import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobile.js';
-import { parseBlocks, serialize, renderInline } from './model.js';
+import { parseBlocks, serialize, renderInline, buildDocContext } from './model.js';
 import { previewMarkdown, needsPreview } from './vendor/renderer.js';
 
 const $ = (id) => document.getElementById(id);
@@ -14,6 +14,7 @@ const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.4**。
   .replace('这里是 **墨页 v0.4**。', desktop ? '这里是 **墨页 Windows v0.4**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.4**。')
   .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : isAndroid ? '文字留在此设备。点「导入」打开 Markdown，点「导出 .md」通过系统文件选择器保存新文件。草稿在应用内自动保留；请定期导出备份。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。');
 let blocks = [];
+let doc = null;
 let activeId = null;
 let composing = false;
 let compositionTimer;
@@ -126,6 +127,21 @@ function headingLabel(block) {
   return content.replace(/\n/g, ' ').replace(/[*_`~]/g, '').trim() || '未命名标题';
 }
 
+const FN_DEF_PREFIX_RE = /^( {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*)([\s\S]*)$/;
+const LINK_DEF_PREFIX_RE = /^( {0,3}\[[^\]\s]{1,64}\]:[ \t]*)(\S+)([\s\S]*)$/;
+const TYPE_CLASS = { footnoteDef: 'footnote-def', linkDef: 'link-def' };
+// Footnote numbering is document-wide, so a block whose own text did not change can still
+// need a new number; the reference order is part of the render key.
+function blockKey(block) { return block.type + ':' + block.raw + ':' + doc.order.join(' '); }
+
+function footnoteDefParts(block) {
+  const m = FN_DEF_PREFIX_RE.exec(block.raw) || ['', '', block.raw];
+  return { prefix: m[1], body: m[2], number: doc?.defNumbers.get(block.id) || 0 };
+}
+function linkDefParts(block) {
+  const m = LINK_DEF_PREFIX_RE.exec(block.raw) || ['', '', '', ''];
+  return { prefix: m[1], url: m[2], suffix: m[3] };
+}
 function decorate(block) {
   const raw = block.raw;
   if (needsPreview(block)) {
@@ -136,14 +152,25 @@ function decorate(block) {
       if (task) checkbox = `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${task[2].toLowerCase() === 'x'}" aria-label="切换任务完成状态" data-task="${block.id}"></button>`;
     }
     if (block.type === 'heading') previewRaw = headingParts(block).content;
+    if (block.type === 'footnoteDef') previewRaw = footnoteDefParts(block).body;
     if (block.type === 'quote') previewRaw = raw.replace(/^ {0,3}>[ \t]?/gm, '');
     const highlight = !(block.type === 'code' && block.id === activeId);
-    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type, { highlight })}</div>`;
+    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type, { highlight, doc })}</div>`;
+  }
+  if (block.type === 'footnoteDef') {
+    const { prefix, body, number } = footnoteDefParts(block);
+    if (!number) return esc(prefix) + renderInline(body, doc);
+    return `<span class="syntax">${esc(prefix)}</span><a class="fn-back" href="#ink-ref-${number}" data-fn="${number}." aria-label="回到引用 ${number}"></a>` + renderInline(body, doc);
+  }
+  if (block.type === 'linkDef') {
+    const { prefix, url, suffix } = linkDefParts(block);
+    const safe = /^(?:https?:|mailto:)/i.test(url);
+    return esc(prefix) + (safe ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>` : esc(url)) + esc(suffix);
   }
   if (block.type === 'heading') {
     const { content, prefix, suffix, underline } = headingParts(block);
     return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') +
-      renderInline(content) +
+      renderInline(content, doc) +
       (suffix ? `<span class="syntax">${esc(suffix)}</span>` : '') +
       (underline !== null ? `<span class="syntax setext-underline">\n${esc(underline)}</span>` : '');
   }
@@ -154,24 +181,25 @@ function decorate(block) {
   if (task) {
     prefix = task[0];
     const checked = task[2].toLowerCase() === 'x';
-    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length))}</span>`;
+    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length), doc)}</span>`;
   }
-  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length));
+  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length), doc);
 }
 function render(sel = null) {
+  doc = buildDocContext(blocks);
   const existing = new Map([...editor.children].map((n) => [n.dataset.id, n]));
   const kept = new Set();
   blocks.forEach((block, index) => {
     let node = existing.get(block.id);
     if (!node) { node = document.createElement('div'); node.dataset.id = block.id; }
     kept.add(node);
-    const key = block.type + ':' + block.raw;
+    const key = blockKey(block);
     if (node._key !== key) {
       node.innerHTML = block.raw ? decorate(block) : '<br>';
       node._key = key;
       node._stale = block.type === 'code' && block.id === activeId;
     }
-    node.className = `block ${block.type}${needsPreview(block) ? ' rich-block' : ''}${block.id === activeId ? ' active' : ''}`;
+    node.className = `block ${TYPE_CLASS[block.type] || block.type}${needsPreview(block) ? ' rich-block' : ''}${block.id === activeId ? ' active' : ''}`;
     const indent = block.raw.match(/^[ \t]*/)[0].replaceAll('\t', '    ').length;
     node.style.setProperty('--indent', `${Math.min(indent / 2, 16) * 22}px`);
     const task = block.type === 'list' && /^\s*(?:[-+*]|\d+[.)])\s+\[[ xX]\]\s/.test(block.raw);
@@ -194,7 +222,7 @@ function refreshCodePreview(id) {
   const block = blocks.find((candidate) => candidate.id === id);
   if (!node || !block || block.type !== 'code' || !node._stale) return;
   node.innerHTML = decorate(block);
-  node._key = block.type + ':' + block.raw;
+  node._key = blockKey(block);
   node._stale = false;
 }
 
@@ -706,11 +734,16 @@ $('name-dialog').addEventListener('close', () => {
     toast('新的一页，开始落笔吧');
   } else { updateUI(); persist(); toast('已更新下载文件名'); }
 });
+function flashAnchor(node) {
+  node.classList.add('flash');
+  clearTimeout(node._flash);
+  node._flash = setTimeout(() => node.classList.remove('flash'), 900);
+}
 editor.addEventListener('mousedown', (event) => {
   if (composing) return;
   if (event.target.closest('.task-box')) event.preventDefault();
   const preview = event.target.closest('.block-preview');
-  if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary')) {
+  if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary') && !event.target.closest('a[href^="#ink-"]')) {
     event.preventDefault();
     const id = preview.parentElement.dataset.id;
     const index = blocks.findIndex(b => b.id === id);
@@ -733,6 +766,14 @@ editor.addEventListener('click', (event) => {
   const link = event.target.closest('a');
   if (link) {
     event.preventDefault();
+    const internal = /^#ink-(fn|ref)-(\d+)$/.exec(link.getAttribute('href') || '');
+    if (internal) {
+      const pair = doc?.byNumber.get(Number(internal[2]));
+      const targetId = internal[1] === 'fn' ? pair?.defBlockId : pair?.refBlockId;
+      const target = targetId ? editor.querySelector(`[data-id="${targetId}"]`) : null;
+      if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); flashAnchor(target); }
+      return;
+    }
     if (event.ctrlKey || event.metaKey) window.open(link.href, '_blank', 'noopener,noreferrer');
   }
 });

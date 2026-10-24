@@ -131,7 +131,13 @@ export function buildDocContext(blocks){
       entry.refBlockId=block.id; entry.number=order.length+1; order.push(normalizeLabel(match[1]));
     }
   }
-  return {footnotes,links,order,duplicateFootnotes,duplicateLinks};
+  const defNumbers = new Map(), byNumber = new Map();
+  for (const entry of footnotes.values()) {
+    if (!entry.number) continue;
+    defNumbers.set(entry.blockId, entry.number);
+    byNumber.set(entry.number, { defBlockId: entry.blockId, refBlockId: entry.refBlockId });
+  }
+  return {footnotes,links,order,duplicateFootnotes,duplicateLinks,defNumbers,byNumber};
 }
 function syntax(marker){return `<span class="syntax">${escape(marker)}</span>`;}
 function isSafeLinkTarget(url){return /^(?:https?:|mailto:)/i.test(url)||/^#[^\s]*$/.test(url);}
@@ -175,7 +181,9 @@ export function renderInline(raw, doc = null){
         const ref = text.slice(pos).match(/^\[\^([^\]\s]{1,64})\]/);
         const entry = ref ? doc.footnotes.get(normalizeLabel(ref[1])) : null;
         if (entry && entry.number) {
-          out += syntax(ref[0]) + `<sup><a href="#ink-fn-${entry.number}">${entry.number}</a></sup>`;
+          // The number is not in the Markdown source, so it ships as CSS-generated content: an
+          // empty anchor keeps DOM text byte-equal to raw, which the caret mapping depends on.
+          out += syntax(ref[0]) + `<sup class="fn-ref"><a href="#ink-fn-${entry.number}" data-fn="${entry.number}" aria-label="脚注 ${entry.number}"></a></sup>`;
           pos += ref[0].length;
           continue;
         }
