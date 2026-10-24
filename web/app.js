@@ -290,24 +290,24 @@ function format(command) {
   if (command === 'indent' || command === 'outdent') return indentSelection(command === 'outdent');
   const s = range();
   const value = text();
-  if ((command === 'h1' || command === 'h2') && s.start === s.end) {
-    const p = locate(s.start);
-    if (p.block.style === 'setext') {
-      const blockStart = s.start - p.offset;
-      const lines = p.block.raw.split('\n');
+  // H1/H2 inside a Setext heading replace only the underline. The caret and
+  // selection stay in the heading content so typing cannot strand the markers.
+  if (command === 'h1' || command === 'h2') {
+    const from = locate(s.start);
+    const to = locate(s.end);
+    if (from.index === to.index && from.block.style === 'setext' && to.block.style === 'setext') {
+      const blockStart = s.start - from.offset;
+      const lines = from.block.raw.split('\n');
       const last = lines.length - 1;
       const mark = command === 'h1' ? '=' : '-';
       lines[last] = lines[last].replace(/^(\s*)(=+|-+)(\s*)$/, (_, lead, marks, trail) => lead + mark.repeat(marks.length) + trail);
       const raw = lines.join('\n');
-      apply(text().slice(0, blockStart) + raw + text().slice(blockStart + p.block.raw.length), {
-        a: blockStart + raw.length,
-        f: blockStart + raw.length,
-      });
+      apply(value.slice(0, blockStart) + raw + value.slice(blockStart + from.block.raw.length), { a: s.start, f: s.end });
       return;
     }
   }
   if (['table','hr','math','html'].includes(command)) {
-    const snippets = { table: '| 列一 | 列二 |\n| :--- | ---: |\n| 内容 | 内容 |', hr: '---', math: '$$\nE = mc^2\n$$', html: '<details>\n<summary>展开内容</summary>\n<p>在这里写内容</p>\n</details>' };
+    const snippets = { table: '| 列一 | 列二 |\n| :--- | ---: |\n| 内容 | 内容 |', hr: '***', math: '$$\nE = mc^2\n$$', html: '<details>\n<summary>展开内容</summary>\n<p>在这里写内容</p>\n</details>' };
     const lead = s.start && value[s.start - 1] !== '\n' ? '\n\n' : '';
     const snippet = lead + snippets[command] + '\n\n';
     const cursor = s.start + lead.length + (command === 'math' ? 3 : 0);

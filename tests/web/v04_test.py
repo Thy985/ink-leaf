@@ -76,6 +76,29 @@ def caret(page, index=0, offset=None):
     page.wait_for_timeout(30)
 
 
+def select_text(page, index, start, end):
+    page.evaluate(
+        """({ index, start, end }) => {
+          const el = document.getElementById('editor').children[index];
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          let node;
+          while ((node = walker.nextNode())) nodes.push(node);
+          let left = start, a = null, ao = 0, b = null, bo = 0;
+          for (const candidate of nodes) {
+            if (a === null && left <= candidate.length) { a = candidate; ao = left; }
+            if (b === null && end <= candidate.length) { b = candidate; bo = end; break; }
+            left = Math.max(0, left - candidate.length);
+            end = Math.max(0, end - candidate.length);
+          }
+          const selection = getSelection();
+          selection.setBaseAndExtent(a, ao, b, bo);
+        }""",
+        {"index": index, "start": start, "end": end},
+    )
+    page.wait_for_timeout(30)
+
+
 cases = []
 server = wait_server()
 with sync_playwright() as playwright:
@@ -178,6 +201,40 @@ with sync_playwright() as playwright:
         page.keyboard.insert_text("next")
         assert markdown(page) == "Title\n===\n\nnext"
         cases.append("Setext H1/H2 替换与末尾 Enter")
+        print("PASS", cases[-1], flush=True)
+
+        # Formatting keeps the caret in the content so typing cannot strand the underline.
+        load(page, "Title\n===")
+        caret(page, 0, len("Title"))
+        page.locator('[data-command="h2"]').click()
+        assert markdown(page) == "Title\n---"
+        page.keyboard.insert_text("x")
+        assert markdown(page) == "Titlex\n---", repr(markdown(page))
+        blocks = page.evaluate("window.inkstone.getBlocks()")
+        assert blocks[0]["type"] == "heading" and blocks[0]["style"] == "setext"
+        assert blocks[0]["level"] == 2
+        cases.append("Setext 标题格式化后继续输入仍保持 Setext")
+        print("PASS", cases[-1], flush=True)
+
+        # A selection inside a Setext heading replaces only the underline.
+        load(page, "Title\n---")
+        select_text(page, 0, 0, len("Title"))
+        page.locator('[data-command="h1"]').click()
+        assert markdown(page) == "Title\n===", repr(markdown(page))
+        blocks = page.evaluate("window.inkstone.getBlocks()")
+        assert blocks[0]["type"] == "heading" and blocks[0]["style"] == "setext"
+        assert blocks[0]["level"] == 1
+        cases.append("Setext 标题内选中文本切换 H1/H2")
+        print("PASS", cases[-1], flush=True)
+
+        # The hr command uses *** so it is never read back as a Setext underline.
+        load(page, "para\nnext")
+        caret(page, 0, len("para\n"))
+        page.locator('[data-command="hr"]').click()
+        blocks = page.evaluate("window.inkstone.getBlocks()")
+        assert any(block["type"] == "hr" for block in blocks), blocks
+        assert markdown(page) == "para\n***\n\nnext", repr(markdown(page))
+        cases.append("分割线命令插入 *** 而不是 Setext 下划线")
         print("PASS", cases[-1], flush=True)
 
         load(page, "## 标题 ##")
