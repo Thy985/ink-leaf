@@ -57,7 +57,15 @@ export function classify(raw) {
 function isFenceClose(line, open) { const m=/^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line); return Boolean(m && m[1][0]===open[0] && m[1].length>=open.length); }
 function isMathClose(line, opening) { return opening==='$$' ? /^ {0,3}\$\$\s*$/.test(line) : /^ {0,3}\\\]\s*$/.test(line); }
 function hasInlineMathClose(line, opening) { const start=line.search(opening==='$$' ? /\$\$/ : /\\\[/); const close=opening==='$$' ? line.indexOf('$$',start+2) : line.indexOf('\\]',start+2); return start>=0 && close>=0 && /^\s*$/.test(line.slice(close+2)); }
-function isSpecialLine(line, lines, index) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||FOOTNOTE_DEF_RE.test(line)||LINK_DEF_RE.test(line)||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
+function isDefinitionLine(line) { return FOOTNOTE_DEF_RE.test(line) || LINK_DEF_RE.test(line); }
+// Like CommonMark, a definition cannot interrupt the block above it; but consecutive
+// definitions at the end of a document must each stay a definition.
+function startsDefinitionBlock(line, lines, index) {
+  if (!isDefinitionLine(line)) return false;
+  const previous = index > 0 ? lines[index - 1] : '';
+  return index === 0 || /^\s*$/.test(previous ?? '') || isDefinitionLine(previous);
+}
+function isSpecialLine(line, lines, index) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||startsDefinitionBlock(line,lines,index)||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
 function nextId(used,serial) { let id; do id=`block-${serial.value++}`; while(used.has(id)); used.add(id); return id; }
 
 export function parseBlocks(text, previous=[]) {
@@ -106,8 +114,14 @@ function normalizeLabel(label){return String(label??'').trim().toLowerCase();}
 // References inside code spans, fenced or indented code, math and raw HTML never become
 // anchors, so they must not consume a footnote number either.
 function scannableText(block){
-  if(block.type==='footnoteDef'||block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
-  return String(block.raw??'').replace(/`[^`\n]*`/g,'');
+  if(block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
+  // A definition's own `[^label]:` marker is not a reference, but its body may hold one.
+  const raw=String(block.raw??'');
+  const text=block.type==='footnoteDef'?raw.replace(/^ {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*/,''):raw;
+  return text
+    .replace(/(`+)[\s\S]*?\1/g,'')
+    .replace(/\$[^$\n]*\$/g,'')
+    .replace(/\\\([\s\S]*?\\\)/g,'');
 }
 
 export function buildDocContext(blocks){
@@ -193,7 +207,8 @@ export function renderInline(raw, doc = null){
         const entry = ref ? doc.links.get(normalizeLabel(ref[2])) : null;
         if (entry) {
           const labelHtml = render(ref[1], allowCode, false);
-          out += syntax('[') + (isSafeLinkTarget(entry.url) ? `<a href="${escape(entry.url)}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>` : labelHtml) + syntax(`][${ref[2]}]`);
+          const title = entry.title ? ` title="${escape(entry.title)}"` : '';
+          out += syntax('[') + (isSafeLinkTarget(entry.url) ? `<a href="${escape(entry.url)}"${title} target="_blank" rel="noopener noreferrer">${labelHtml}</a>` : labelHtml) + syntax(`][${ref[2]}]`);
           pos += ref[0].length;
           continue;
         }

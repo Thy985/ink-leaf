@@ -94,5 +94,6 @@ html[data-theme="dark"] #editor .hljs-attr,html[data-theme="dark"] #editor .hljs
 html[data-theme="dark"] #editor .footnote-def,html[data-theme="dark"] #editor .link-def{color:#a9b79e;border-left-color:#3f4b39}
 @media (max-width:520px){#editor .footnote-def,#editor .link-def{padding-left:8px}}
 #editor .fn-ref a::after,#editor .fn-back::after{content:attr(data-fn)}
+#editor .footnote-def .block-preview>a.fn-back{float:left;margin-right:.4em}
 #editor sup.fn-ref{vertical-align:super;font-size:.75em;line-height:0}
 #editor .fn-ref a,#editor .fn-back{color:var(--accent);text-decoration:none;font-weight:600}

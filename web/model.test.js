@@ -289,11 +289,33 @@ test('parses top-level footnote and link definitions as single-line blocks', () 
   assert.equal(serialize(blocks), source);
 });
 
-test('does not let a paragraph absorb a following definition line', () => {
-  const blocks = parseBlocks('A\n[^x]: B\n[repo]: https://example.com\n');
-  assert.deepEqual(blocks.map(({ type }) => type), ['paragraph', 'footnoteDef', 'linkDef', 'blank']);
-  assert.equal(blocks[0].raw, 'A');
-  assert.equal(blocks[1].body, 'B');
+test('a definition continues the block above it unless a blank line or another definition precedes it', () => {
+  const paragraph = parseBlocks('A\n[^x]: B\n');
+  assert.deepEqual(paragraph.map(({ type }) => type), ['paragraph', 'blank']);
+  assert.equal(paragraph[0].raw, 'A\n[^x]: B');
+
+  const list = parseBlocks('- item\n  [^a]: x\n');
+  assert.deepEqual(list.map(({ type }) => type), ['list', 'blank']);
+  assert.equal(list[0].raw, '- item\n  [^a]: x');
+
+  // Quotes never absorb a following plain line in this model; the point is the def
+  // line stays an ordinary paragraph instead of being promoted and claiming a number.
+  const quote = parseBlocks('> q\n[a]: https://x.dev\n');
+  assert.deepEqual(quote.map(({ type }) => type), ['quote', 'paragraph', 'blank']);
+  assert.equal(buildDocContext(quote).links.size, 0);
+
+  const chained = parseBlocks('A\n[^x]: B\n[repo]: https://example.com\n');
+  assert.deepEqual(chained.map(({ type }) => type), ['paragraph', 'linkDef', 'blank']);
+
+  for (const source of ['A\n[^x]: B\n', '- item\n  [^a]: x\n', '> q\n[a]: https://x.dev\n']) {
+    assert.equal(serialize(parseBlocks(source)), source);
+  }
+});
+
+test('consecutive definitions each start their own block without a blank line', () => {
+  const blocks = parseBlocks('[^a]: one\n[repo]: https://x.dev\n[^b]: two\n');
+  assert.deepEqual(blocks.map(({ type }) => type), ['footnoteDef', 'linkDef', 'footnoteDef', 'blank']);
+  assert.equal(serialize(blocks), '[^a]: one\n[repo]: https://x.dev\n[^b]: two\n');
 });
 
 test('accepts an empty footnote body but needs a label and a link destination', () => {
@@ -403,7 +425,7 @@ test('leaves unpaired, escaped and empty footnote references as plain text', () 
 test('resolves link references through the document context', () => {
   const blocks = parseBlocks('Read [the repo][repo] now\n\n[repo]: https://example.com "Repo title"\n');
   const html = renderInline(blocks[0].raw, buildDocContext(blocks));
-  assert.match(html, /<a href="https:\/\/example\.com" target="_blank" rel="noopener noreferrer">the repo<\/a>/);
+  assert.match(html, /<a href="https:\/\/example\.com" title="Repo title" target="_blank" rel="noopener noreferrer">the repo<\/a>/);
   assert.ok(html.includes('<span class="syntax">][repo]<\/span>'));
   assert.equal(html.replace(/<\/?(?:span|a|sup)\b[^>]*>/g, ''), 'Read [the repo][repo] now');
 });
@@ -419,4 +441,41 @@ test('does not turn a link reference into an anchor when the target is unsafe or
 test('renders nothing new when no document context is supplied', () => {
   assert.equal(renderInline('See [^a] and [x][repo]'), renderInline('See [^a] and [x][repo]', null));
   assert.ok(!renderInline('[^a]').includes('<sup>'));
+});
+
+test('does not number references inside multi-backtick spans or inline math', () => {
+  const source = 'A ``[^a]`` B $[^b]$ C \\(x [^c] y\\) D [^d]\n\n[^a]: one\n[^b]: two\n[^c]: three\n[^d]: four\n';
+  const ctx = buildDocContext(parseBlocks(source));
+  assert.equal(ctx.footnotes.get('a').number, 0);
+  assert.equal(ctx.footnotes.get('b').number, 0);
+  assert.equal(ctx.footnotes.get('c').number, 0);
+  assert.equal(ctx.footnotes.get('d').number, 1);
+  assert.deepEqual([...ctx.order], ['d']);
+});
+
+test('never nests an anchor when a footnote reference appears inside link brackets', () => {
+  const blocks = parseBlocks('See [a [^b] c](https://x.dev)\n\n[^b]: note\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.match(html, /<sup class="fn-ref"><a href="#ink-fn-1"/);
+  assert.ok(!/<a\b[^>]*>(?:(?!<\/a>)[\s\S])*<a\b/.test(html), html);
+});
+
+test('numbers a reference made inside another footnote definition body', () => {
+  const blocks = parseBlocks('A[^a]\n\n[^a]: 见 [^b]\n[^b]: 另一条\n');
+  const ctx = buildDocContext(blocks);
+  assert.equal(ctx.footnotes.get('a').number, 1);
+  assert.equal(ctx.footnotes.get('b').number, 2);
+  assert.match(renderInline('见 [^b]', ctx), /href="#ink-fn-2"/);
+});
+
+test('carries a link definition title onto the resolved anchor', () => {
+  const blocks = parseBlocks('读 [文档][docs]\n\n[docs]: https://example.com/docs "官方文档"\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.match(html, /<a href="https:\/\/example\.com\/docs" title="官方文档" target="_blank" rel="noopener noreferrer">文档<\/a>/);
+});
+
+test('leaves the anchor without a title when the definition has none', () => {
+  const blocks = parseBlocks('读 [文档][docs]\n\n[docs]: https://example.com/docs\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.ok(!html.includes('title='), html);
 });

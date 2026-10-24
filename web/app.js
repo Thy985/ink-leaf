@@ -142,25 +142,29 @@ function linkDefParts(block) {
   const m = LINK_DEF_PREFIX_RE.exec(block.raw) || ['', '', '', ''];
   return { prefix: m[1], url: m[2], suffix: m[3] };
 }
+// The number is CSS-generated content so the editable DOM keeps the exact source text.
+function footnoteBack(number) {
+  return number ? `<a class="fn-back" href="#ink-ref-${number}" data-fn="${number}." aria-label="回到引用 ${number}"></a>` : '';
+}
 function decorate(block) {
   const raw = block.raw;
   if (needsPreview(block)) {
-    let previewRaw = raw, checkbox = '';
+    let previewRaw = raw, checkbox = '', back = '';
     if (block.type === 'list') {
       const task = raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]\s/);
       previewRaw = raw.replace(/^\s*(?:[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/, '');
       if (task) checkbox = `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${task[2].toLowerCase() === 'x'}" aria-label="切换任务完成状态" data-task="${block.id}"></button>`;
     }
     if (block.type === 'heading') previewRaw = headingParts(block).content;
-    if (block.type === 'footnoteDef') previewRaw = footnoteDefParts(block).body;
+    if (block.type === 'footnoteDef') { const def = footnoteDefParts(block); previewRaw = def.body; back = footnoteBack(def.number); }
     if (block.type === 'quote') previewRaw = raw.replace(/^ {0,3}>[ \t]?/gm, '');
     const highlight = !(block.type === 'code' && block.id === activeId);
-    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type, { highlight, doc })}</div>`;
+    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${back}${previewMarkdown(previewRaw, block.type, { highlight, doc })}</div>`;
   }
   if (block.type === 'footnoteDef') {
     const { prefix, body, number } = footnoteDefParts(block);
     if (!number) return esc(prefix) + renderInline(body, doc);
-    return `<span class="syntax">${esc(prefix)}</span><a class="fn-back" href="#ink-ref-${number}" data-fn="${number}." aria-label="回到引用 ${number}"></a>` + renderInline(body, doc);
+    return `<span class="syntax">${esc(prefix)}</span>${footnoteBack(number)}` + renderInline(body, doc);
   }
   if (block.type === 'linkDef') {
     const { prefix, url, suffix } = linkDefParts(block);

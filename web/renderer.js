@@ -67,7 +67,7 @@ md.inline.ruler.before('link', 'ink_ref', (state, silent) => {
   if (!entry || !INK_SAFE_TARGET_RE.test(entry.url)) return false;
   if (!silent) {
     const open = state.push('link_open', 'a', 1);
-    open.attrs = [['href', entry.url], ['target', '_blank'], ['rel', 'noopener noreferrer']];
+    open.attrs = [['href', entry.url], ...(entry.title ? [['title', entry.title]] : []), ['target', '_blank'], ['rel', 'noopener noreferrer']];
     open.markup = 'ink_linkref';
     const label = [];
     state.md.inline.parse(ref[1], state.md, state.env, label);

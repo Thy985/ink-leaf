@@ -241,6 +241,23 @@ with sync_playwright() as playwright:
         cases.append("脚注正文里的脚本与图片被过滤")
         print("PASS", cases[-1], flush=True)
 
+        # --- a rich footnote body keeps its number and back reference ---
+        raw = "正文[^r]\n\n[^r]: 来源 <https://example.com>\n"
+        load(page, raw)
+        blur(page)
+        assert page.locator("#editor .footnote-def .block-preview").count() == 1
+        assert page.locator('#editor .footnote-def a.fn-back[href="#ink-ref-1"]').count() == 1
+        assert page.evaluate(
+            "() => getComputedStyle(document.querySelector('#editor .footnote-def a.fn-back'), '::after').content"
+        ) == '"1."'
+        assert page.locator("#editor .footnote-def a.fn-back").bounding_box()["width"] > 0
+        page.locator('#editor .footnote-def a.fn-back').click()
+        page.wait_for_timeout(120)
+        assert page.locator("#editor .paragraph.flash").count() == 1
+        assert markdown(page) == raw
+        cases.append("富预览的脚注定义仍保留序号与回链")
+        print("PASS", cases[-1], flush=True)
+
         # --- mixed document round-trips exactly ---
         raw = (
             "标题[^1]\n====\n\n段落 [文字][repo]\n\n| a | b |\n| --- | --- |\n| c | 注[^2] |\n\n"
