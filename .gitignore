@@ -33,3 +33,7 @@ android/app/src/main/assets/www/
 *.jks
 *.keystore
 .idea/
+
+# Local worktrees and agent scratch
+.worktrees/
+.superpowers/
