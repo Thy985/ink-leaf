@@ -495,6 +495,9 @@ test('does not number references inside a link destination, angle target or disp
   assert.equal(ctx.footnotes.get('b').number, 0);
   assert.equal(ctx.footnotes.get('c').number, 0);
   assert.equal(ctx.footnotes.get('d').number, 1);
+  // Angle brackets with spaces inside are comparison text, not a target, so the ref still counts.
+  const spaced = buildDocContext(parseBlocks('a < b [^d] > c\n\n[^d]: 1\n'));
+  assert.equal(spaced.footnotes.get('d').number, 1);
 });
 
 test('carries a link definition title onto the resolved anchor', () => {

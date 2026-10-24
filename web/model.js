@@ -122,7 +122,7 @@ function scannableText(block){
     .replace(/\\\([\s\S]*?\\\)/g,'')
     .replace(/\$[^$\n]*\$/g,'')
     .replace(/\]\([^)]*\)/g,']')
-    .replace(/<[^<>\n]*>/g,'');
+    .replace(/<[^<>\s]*>/g,'');
 }
 
 export function buildDocContext(blocks){
