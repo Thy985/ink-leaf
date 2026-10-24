@@ -482,6 +482,22 @@ test('numbers a reference made inside another footnote definition body', () => {
   assert.match(renderInline('见 [^b]', ctx), /href="#ink-fn-2"/);
 });
 
+test('numbers a reference only where a render path can turn it into an anchor', () => {
+  const number = (line) => buildDocContext(parseBlocks(`${line}\n\n[^a]: 说明\n`)).footnotes.get('a').number;
+  // Neither path anchors these: an HTML comment, a tag attribute, an autolink target, a bare URL, a tight destination.
+  assert.equal(number(String.raw`A <!-- [^a] --> B`), 0);
+  assert.equal(number(String.raw`x <a href="p[^a]q">y</a>`), 0);
+  assert.equal(number(String.raw`<https://e.com/x[^a]y> z`), 0);
+  assert.equal(number(String.raw`见 https://e.com/q[^a]r 说明`), 0);
+  assert.equal(number(String.raw`y [x](https://e.com/q[^a]r) z`), 0);
+  // These do anchor, so they must keep a number: comparison text, inline HTML around the ref,
+  // a destination with spaces (not a link at all), escaped brackets with spaces (not display math).
+  assert.equal(number(String.raw`a < b [^a] > d`), 1);
+  assert.equal(number(String.raw`<b>[^a]</b> 说明`), 1);
+  assert.equal(number(String.raw`y [x](foo [^a] bar) z`), 1);
+  assert.equal(number(String.raw`pre \[ [^a] \] x`), 1);
+});
+
 test('a definition does not number a reference to itself', () => {
   const ctx = buildDocContext(parseBlocks('[^a]: see [^a]\n'));
   assert.equal(ctx.footnotes.get('a').number, 0);
