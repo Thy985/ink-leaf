@@ -264,6 +264,23 @@ with sync_playwright() as playwright:
         cases.append("缩进代码块预览、编辑与 round-trip")
         print("PASS", cases[-1], flush=True)
 
+        # --- bare URLs ---
+        raw = "see https://example.com/a."
+        load(page, raw)
+        blur(page)
+        assert page.locator("#editor a[href='https://example.com/a']").count() == 1
+        assert markdown(page) == raw
+        cases.append("普通段落裸 URL 链接化")
+        print("PASS", cases[-1], flush=True)
+
+        raw = "| name | url |\n| --- | --- |\n| link | https://example.com |"
+        load(page, raw)
+        blur(page)
+        assert page.locator(".block-preview table a[href='https://example.com']").count() == 1
+        assert markdown(page) == raw
+        cases.append("富块裸 URL 链接化")
+        print("PASS", cases[-1], flush=True)
+
         page.set_viewport_size({"width": 393, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         page.locator("#theme-toggle").click()

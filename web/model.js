@@ -97,16 +97,46 @@ export function serialize(blocks){return (Array.isArray(blocks)?blocks:[]).map(b
 function syntax(marker){return `<span class="syntax">${escape(marker)}</span>`;}
 function isSafeLinkTarget(url){return /^(?:https?:|mailto:)/i.test(url)||/^#[^\s]*$/.test(url);}
 
+function trimUrlTail(url) {
+  let value = url;
+  while (/[.,;:!?。，；：！？]$/u.test(value)) value = value.slice(0, -1);
+  while (value.endsWith(')')) {
+    const opens = (value.match(/\(/g) || []).length;
+    const closes = (value.match(/\)/g) || []).length;
+    if (closes <= opens) break;
+    value = value.slice(0, -1);
+  }
+  return value;
+}
+
+function startsUrl(text, pos) {
+  const first = text[pos];
+  if (first !== 'h' && first !== 'H' && first !== 'm' && first !== 'M') return false;
+  if (pos > 0 && /[A-Za-z0-9_@]/.test(text[pos - 1])) return false;
+  return /^(?:https?:\/\/|mailto:)/i.test(text.slice(pos));
+}
+
 export function renderInline(raw){
   const input=String(raw??'');
-  const render=(text,allowCode=true)=>{let out='',pos=0;
+  const render=(text,allowCode=true,allowLinks=true)=>{let out='',pos=0;
     while(pos<text.length){
+      if (allowLinks && startsUrl(text, pos)) {
+        const match = text.slice(pos).match(/^(?:https?:\/\/|mailto:)[^\s<>"'`]+/i);
+        if (match) {
+          const href = trimUrlTail(match[0]);
+          if (href) {
+            out += `<a href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(href)}</a>`;
+            pos += href.length;
+            continue;
+          }
+        }
+      }
       if(text[pos]==='\\' && pos+1<text.length && /[\\`*_[\]~<>()[\]{}#+.!|_-]/.test(text[pos+1])) { out+=syntax('\\')+escape(text[pos+1]); pos+=2; continue; }
       if(allowCode&&text[pos]==='`'){let n=1;while(text[pos+n]==='`')n++;const marker='`'.repeat(n), end=text.indexOf(marker,pos+n);if(end!==-1){let content=text.slice(pos+n,end), padded=content.startsWith(' ')&&content.endsWith(' ')&&content.trim();if(padded)content=content.slice(1,-1);out+=syntax(marker)+(padded?' ':'')+`<code>${escape(content)}</code>`+(padded?' ':'')+syntax(marker);pos=end+n;continue;}}
-      const link=text.slice(pos).match(/^\[([^\]\n]+)\]\(([^)\s]+)\)/);if(link){const[,label,url]=link, labelHtml=render(label,allowCode), suffix=`](${url})`;out+=syntax('[')+(isSafeLinkTarget(url)?`<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>`:labelHtml)+syntax(suffix);pos+=link[0].length;continue;}
-      const strong=text.slice(pos).match(/^(\*\*|__)(?=\S)([\s\S]+?)\1/);if(strong){out+=syntax(strong[1])+`<strong>${render(strong[2],false)}</strong>`+syntax(strong[1]);pos+=strong[0].length;continue;}
-      const emphasis=text.slice(pos).match(/^(\*|_)(?=\S)([\s\S]+?)\1/);if(emphasis){out+=syntax(emphasis[1])+`<em>${render(emphasis[2],false)}</em>`+syntax(emphasis[1]);pos+=emphasis[0].length;continue;}
-      const strike=text.slice(pos).match(/^~~(?=\S)([\s\S]+?)~~/);if(strike){out+=syntax('~~')+`<del>${render(strike[1],false)}</del>`+syntax('~~');pos+=strike[0].length;continue;}
-      let end=pos+1;while(end<text.length&&! '`*_~[\\'.includes(text[end]))end++;out+=escape(text.slice(pos,end));pos=end;
+      const link=text.slice(pos).match(/^\[([^\]\n]+)\]\(([^)\s]+)\)/);if(link){const[,label,url]=link, labelHtml=render(label,allowCode,false), suffix=`](${url})`;out+=syntax('[')+(isSafeLinkTarget(url)?`<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>`:labelHtml)+syntax(suffix);pos+=link[0].length;continue;}
+      const strong=text.slice(pos).match(/^(\*\*|__)(?=\S)([\s\S]+?)\1/);if(strong){out+=syntax(strong[1])+`<strong>${render(strong[2],false,allowLinks)}</strong>`+syntax(strong[1]);pos+=strong[0].length;continue;}
+      const emphasis=text.slice(pos).match(/^(\*|_)(?=\S)([\s\S]+?)\1/);if(emphasis){out+=syntax(emphasis[1])+`<em>${render(emphasis[2],false,allowLinks)}</em>`+syntax(emphasis[1]);pos+=emphasis[0].length;continue;}
+      const strike=text.slice(pos).match(/^~~(?=\S)([\s\S]+?)~~/);if(strike){out+=syntax('~~')+`<del>${render(strike[1],false,allowLinks)}</del>`+syntax('~~');pos+=strike[0].length;continue;}
+      let end=pos+1;while(end<text.length&&! '`*_~[\\'.includes(text[end])&&!(allowLinks&&startsUrl(text,end)))end++;out+=escape(text.slice(pos,end));pos=end;
     } return out;}; return render(input);
 }

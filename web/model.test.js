@@ -226,3 +226,24 @@ test('does not treat list continuation indentation as indented code', () => {
   const blocks = parseBlocks('- parent\n    - child');
   assert.deepEqual(blocks.map(({ type }) => type), ['list', 'list']);
 });
+
+test('linkifies bare URLs without changing source text', () => {
+  const source = 'see https://example.com/a. and mailto:team@example.com';
+  const html = renderInline(source);
+  assert.match(html, /<a href="https:\/\/example\.com\/a"/);
+  assert.match(html, /<a href="mailto:team@example\.com"/);
+  assert.equal(html.replace(/<[^>]+>/g, ''), source);
+});
+
+test('does not linkify inside code spans, link labels, or mid-word', () => {
+  assert.doesNotMatch(renderInline('`https://example.com`'), /<a\b/);
+  const linked = renderInline('[https://example.com](https://example.com)');
+  assert.equal((linked.match(/<a\b/g) || []).length, 1);
+  assert.doesNotMatch(renderInline('xhttps://example.com'), /<a\b/);
+});
+
+test('trims trailing URL punctuation and unmatched parentheses', () => {
+  const html = renderInline('https://example.com/a).');
+  assert.match(html, /href="https:\/\/example\.com\/a"/);
+  assert.doesNotMatch(html, /href="https:\/\/example\.com\/a\)/);
+});

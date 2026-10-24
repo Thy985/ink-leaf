@@ -3,7 +3,8 @@ import DOMPurify from 'dompurify';
 import katex from 'katex';
 import hljs from 'highlight.js/lib/common';
 
-const md = new MarkdownIt({ html: true, linkify: false, typographer: false, breaks: false });
+const md = new MarkdownIt({ html: true, linkify: true, typographer: false, breaks: false });
+md.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
 md.inline.ruler.before('escape', 'ink_math', (state, silent) => {
   const start = state.pos;
   let open, close;
