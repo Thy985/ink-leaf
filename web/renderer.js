@@ -56,9 +56,11 @@ function plainFence(content) {
 
 function sanitizeHighlight(value) {
   const clean = DOMPurify.sanitize(value, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
-  return clean.replace(/class="([^"]*)"/g, (_, classes) => {
+  // `<` is always escaped in text nodes, so a literal `<span class="` can only come from a
+  // real tag; anchoring here keeps code text like class="foo" byte-for-byte intact.
+  return clean.replace(/<span class="([^"]*)">/g, (_, classes) => {
     const kept = classes.split(/\s+/).filter((name) => name === 'hljs' || name.startsWith('hljs-'));
-    return kept.length ? ` class="${kept.join(' ')}"` : '';
+    return kept.length ? `<span class="${kept.join(' ')}">` : '<span>';
   });
 }
 

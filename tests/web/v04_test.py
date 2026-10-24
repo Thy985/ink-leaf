@@ -166,6 +166,18 @@ with sync_playwright() as playwright:
         cases.append("代码内容 XSS 防护")
         print("PASS", cases[-1], flush=True)
 
+        # The class filter must only touch span tags: `<` is escaped in text nodes,
+        # so code text containing class="..." must survive untouched.
+        raw = '```js\nconst s = \'class="foo"\';\nconst answer = 42;\n```\n'
+        load(page, raw)
+        blur(page)
+        preview = page.locator("#editor .code .block-preview pre code")
+        assert 'class="foo"' in preview.text_content(), repr(preview.text_content())
+        assert preview.locator(".hljs-keyword").count() >= 1
+        assert markdown(page) == raw
+        cases.append("高亮预览保留代码文本中的 class 字面量")
+        print("PASS", cases[-1], flush=True)
+
         # --- setext headings ---
         raw = "标题\n====\n\n二级\n---\n"
         load(page, raw)
@@ -314,13 +326,13 @@ with sync_playwright() as playwright:
 
         assert not errors, errors
     finally:
+        RESULTS.write_text(
+            json.dumps({"passed": len(cases), "cases": cases, "pageErrors": errors}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         browser.close()
         if server:
             server.terminate()
             server.wait(timeout=5)
 
-RESULTS.write_text(
-    json.dumps({"passed": len(cases), "cases": cases, "pageErrors": errors}, ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
 print("ALL PASS", len(cases), flush=True)

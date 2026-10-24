@@ -49,6 +49,7 @@ Linux 无图形会话时运行桌面测试：`xvfb-run -a npm run test:desktop`�
 python3 tests/web/smoke_test.py
 python3 tests/web/advanced_test.py
 python3 tests/web/controls_test.py
+python3 tests/web/v04_test.py
 ```
 
 可用 `CHROMIUM_PATH` 指定浏览器、`INKSTONE_WEB_URL` 指定测试网址。测试输出在忽略目录 `test-results/`，不进入源码提交。

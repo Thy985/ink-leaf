@@ -70,7 +70,8 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   await cmd('source');assert(await page.locator('#source').isHidden());await cmd('source');assert(await page.locator('#source').isVisible());await cmd('theme');assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');await cmd('theme');await cmd('focus');assert(await page.locator('body').evaluate(e=>e.classList.contains('focus-mode')));await page.keyboard.press('Escape');ok('源文、主题、专注模式与 Esc');
   const recoveryText='# 崩溃恢复\n尚未写入文件的内容';await edit(recoveryText);await delay(700);
   const rec=JSON.parse(await fs.readFile(path.join(user,'recovery.json'),'utf8'));assert.equal(rec.text,recoveryText);ok('未保存文档自动写入本地恢复草稿');
-  const proc=app.process();proc.kill('SIGKILL');await delay(800);await launch();await assertMD(recoveryText);ok('模拟崩溃后恢复未保存文字');
+  const proc=app.process();// Windows kill() only terminates the main process; lingering GPU/utility children keep the single-instance lock and block the relaunch, so kill the whole tree.
+  if(process.platform==='win32')require('node:child_process').execFileSync('taskkill',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore'});else proc.kill('SIGKILL');await delay(800);await launch();await assertMD(recoveryText);ok('模拟崩溃后恢复未保存文字');
   await queue('message',2);await cmd('close');assert.equal(await page.locator('#source-toggle').count(),1);ok('关闭窗口选择取消可继续编辑');
   await edit(complex);if(await page.locator('#source').isVisible())await page.locator('#source-toggle').click();await page.locator('#status').click();await page.waitForTimeout(2600);await page.screenshot({path:path.join(OUT,'墨页-Windows桌面预览.png')});
   await queue('message',1);await cmd('close');await delay(500);await assert.rejects(fs.access(path.join(user,'recovery.json')));ok('关闭明确不保存后不再复活丢弃草稿');
