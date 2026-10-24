@@ -86,3 +86,14 @@ html[data-theme="dark"] #editor .hljs-comment{color:#7c8974}
 html[data-theme="dark"] #editor .hljs-number{color:#d9a07a}
 html[data-theme="dark"] #editor .hljs-title,html[data-theme="dark"] #editor .hljs-function{color:#9cc4d4}
 html[data-theme="dark"] #editor .hljs-attr,html[data-theme="dark"] #editor .hljs-variable{color:#d6bd8a}
+/* --- v0.5 footnotes and link reference definitions --- */
+#editor .footnote-def,#editor .link-def{font-size:.92em;color:var(--muted);border-left:2px solid var(--line);padding-left:10px;margin:.2em 0}
+#editor .footnote-def a[href^="#ink-ref-"],#editor .link-def a{color:var(--accent);text-decoration:none}
+#editor sup a[href^="#ink-fn-"]{color:var(--accent);text-decoration:none;font-weight:600;padding:0 .15em}
+#editor .block.flash{background:var(--wash);transition:background .5s}
+html[data-theme="dark"] #editor .footnote-def,html[data-theme="dark"] #editor .link-def{color:#a9b79e;border-left-color:#3f4b39}
+@media (max-width:520px){#editor .footnote-def,#editor .link-def{padding-left:8px}}
+#editor .fn-ref a::after,#editor .fn-back::after{content:attr(data-fn)}
+#editor .footnote-def .block-preview>a.fn-back{float:left;margin-right:.4em}
+#editor sup.fn-ref{vertical-align:super;font-size:.75em;line-height:0}
+#editor .fn-ref a,#editor .fn-back{color:var(--accent);text-decoration:none;font-weight:600}

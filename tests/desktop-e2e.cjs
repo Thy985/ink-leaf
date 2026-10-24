@@ -36,14 +36,14 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
  async function assertMD(s){await page.waitForFunction(s=>window.inkstone.getMarkdown()===s,s);assert.equal(await md(),s);}
  try{
   await launch();
-  assert((await md()).includes('Windows v0.4'));
+  assert((await md()).includes('Windows v0.5'));
   assert.equal(await page.evaluate(()=>typeof require),'undefined');
   assert.equal(await page.evaluate(()=>typeof process),'undefined');
   const prefs=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
   assert.equal(prefs.sandbox,true);assert.equal(prefs.contextIsolation,true);assert.equal(prefs.nodeIntegration,false);
   ok('离线启动与隔离沙箱，渲染层无 Node 权限');
   assert.equal(await page.locator('.block-preview table').count(),1);assert.equal(await page.locator('.katex').count(),2);
-  ok('v0.4 表格与本地公式资源完整加载');
+  ok('v0.5 表格与本地公式资源完整加载');
   await app.evaluate(({Menu})=>{
    const entries=Menu.getApplicationMenu().items.flatMap(i=>i.submenu?.items||[]);
    for(const accelerator of ['CommandOrControl+N','CommandOrControl+O','CommandOrControl+S','CommandOrControl+Shift+S','CommandOrControl+K'])if(!entries.some(i=>i.accelerator===accelerator))throw Error('Missing accelerator '+accelerator);
@@ -60,10 +60,13 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   const invalid=path.join(fixtures,'invalid.md');await fs.writeFile(invalid,Buffer.from([0xff,0xfe,0x31]));await open(invalid,false);await assertMD('不能丢失的文字');ok('非法 UTF-8 打开失败保留当前内容');
   await queue('message',1);await cmd('new');await assertMD('');ok('明确不保存后才新建空白文档');
   const clean=path.join(fixtures,'新建保存.md');await edit('# 新文件');await queue('save',{canceled:false,filePath:clean});await cmd('save');assert.equal(await fs.readFile(clean,'utf8'),'# 新文件');ok('未命名文档第一次保存弹系统保存框');
-  const complex='# 墨页 · 只管落笔\n\n| 左 | 中 | 右 |\n| :--- | :---: | ---: |\n| **粗体** | a\\|b | $x^2$ |\n\n---\n\n- 父项\n  - [x] 子项\n\n$$\nE=mc^2\n$$\n\n<details>\n<summary>展开</summary>\n<p><mark>高亮</mark></p>\n</details>\n\n```js\nconst desktop = true;\n```\n';
+  const complex='# 墨页 · 只管落笔\n\n| 左 | 中 | 右 |\n| :--- | :---: | ---: |\n| **粗体** | a\\|b | $x^2$ |\n\n---\n\n- 父项\n  - [x] 子项\n\n$$\nE=mc^2\n$$\n\n<details>\n<summary>展开</summary>\n<p><mark>高亮</mark></p>\n</details>\n\n```js\nconst desktop = true;\n```\n\n段落里的出处[^1] 与 [文档][docs]\n\n[^1]: 来源一\n[docs]: https://example.com/docs\n';
   await edit(complex);await page.locator('#source-toggle').click();await page.locator('#status').click();
   assert.equal(await page.locator('.block-preview table').count(),1);assert.equal(await page.locator('.block-preview hr').count(),1);assert.equal(await page.locator('.katex').count(),2);assert.equal(await md(),complex);
-  assert((await page.locator('.block-preview pre code .hljs-keyword').count()) >= 1);ok('复杂 Markdown 桌面实时预览与原文无损');
+  assert((await page.locator('.block-preview pre code .hljs-keyword').count()) >= 1);
+  assert.equal(await page.locator('#editor sup.fn-ref a[href="#ink-fn-1"]').count(),1);
+  assert.equal(await page.locator('#editor .footnote-def').count(),1);
+  assert.equal(await page.locator('#editor .paragraph a[href="https://example.com/docs"]').count(),1);ok('复杂 Markdown 桌面实时预览与原文无损');
   await edit('<div onclick="window.BAD=1"><script>window.BAD=1</script><iframe src="https://bad.invalid"></iframe><a href="javascript:alert(1)">bad</a><p>safe</p></div>');await page.locator('#source-toggle').click();await page.locator('#status').click();
   assert.equal(await page.evaluate(()=>Boolean(window.BAD)),false);assert.equal(await page.locator('.block-preview script,.block-preview iframe,.block-preview [onclick]').count(),0);ok('HTML 脚本、事件、嵌入与危险链接过滤');
   await edit('alpha alpha');await cmd('find');await page.locator('#find-input').fill('alpha');assert.equal(await page.locator('#find-count').textContent(),'1 / 2');await page.locator('#replace-input').fill('beta');await page.locator('#replace-all').click();await assertMD('beta beta');await page.locator('#find-close').click();await cmd('undo');await assertMD('alpha alpha');await cmd('redo');await assertMD('beta beta');ok('原生菜单查找替换、撤销与重做');

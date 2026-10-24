@@ -1,5 +1,5 @@
 import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobile.js';
-import { parseBlocks, serialize, renderInline } from './model.js';
+import { parseBlocks, serialize, renderInline, buildDocContext } from './model.js';
 import { previewMarkdown, needsPreview } from './vendor/renderer.js';
 
 const $ = (id) => document.getElementById(id);
@@ -10,10 +10,11 @@ const STORAGE = desktop ? 'inkstone.desktop.draft.v03' : 'inkstone.draft.v03';
 let desktopReady = false;
 let desktopBusy = false;
 let desktopPath = null;
-const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.4**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。\n"
-  .replace('这里是 **墨页 v0.4**。', desktop ? '这里是 **墨页 Windows v0.4**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.4**。')
+const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.5**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。\n"
+  .replace('这里是 **墨页 v0.5**。', desktop ? '这里是 **墨页 Windows v0.5**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.5**。')
   .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : isAndroid ? '文字留在此设备。点「导入」打开 Markdown，点「导出 .md」通过系统文件选择器保存新文件。草稿在应用内自动保留；请定期导出备份。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。');
 let blocks = [];
+let doc = null;
 let activeId = null;
 let composing = false;
 let compositionTimer;
@@ -126,24 +127,54 @@ function headingLabel(block) {
   return content.replace(/\n/g, ' ').replace(/[*_`~]/g, '').trim() || '未命名标题';
 }
 
+const FN_DEF_PREFIX_RE = /^( {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*)([\s\S]*)$/;
+const LINK_DEF_PREFIX_RE = /^( {0,3}\[[^\]\s]{1,64}\]:[ \t]*)(\S+)([\s\S]*)$/;
+const TYPE_CLASS = { footnoteDef: 'footnote-def', linkDef: 'link-def' };
+// Footnote numbering is document-wide, so a block whose own text did not change can still
+// need a new number; the reference order is part of the render key.
+function blockKey(block) { return block.type + ':' + block.raw + ':' + doc.order.join(' '); }
+
+function footnoteDefParts(block) {
+  const m = FN_DEF_PREFIX_RE.exec(block.raw) || ['', '', block.raw];
+  return { prefix: m[1], body: m[2], number: doc?.defNumbers.get(block.id) || 0 };
+}
+function linkDefParts(block) {
+  const m = LINK_DEF_PREFIX_RE.exec(block.raw) || ['', '', '', ''];
+  return { prefix: m[1], url: m[2], suffix: m[3] };
+}
+// The number is CSS-generated content so the editable DOM keeps the exact source text.
+function footnoteBack(number) {
+  return number ? `<a class="fn-back" href="#ink-ref-${number}" data-fn="${number}." aria-label="回到引用 ${number}"></a>` : '';
+}
 function decorate(block) {
   const raw = block.raw;
   if (needsPreview(block)) {
-    let previewRaw = raw, checkbox = '';
+    let previewRaw = raw, checkbox = '', back = '';
     if (block.type === 'list') {
       const task = raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]\s/);
       previewRaw = raw.replace(/^\s*(?:[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/, '');
       if (task) checkbox = `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${task[2].toLowerCase() === 'x'}" aria-label="切换任务完成状态" data-task="${block.id}"></button>`;
     }
     if (block.type === 'heading') previewRaw = headingParts(block).content;
+    if (block.type === 'footnoteDef') { const def = footnoteDefParts(block); previewRaw = def.body; back = footnoteBack(def.number); }
     if (block.type === 'quote') previewRaw = raw.replace(/^ {0,3}>[ \t]?/gm, '');
     const highlight = !(block.type === 'code' && block.id === activeId);
-    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type, { highlight })}</div>`;
+    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${back}${previewMarkdown(previewRaw, block.type, { highlight, doc })}</div>`;
+  }
+  if (block.type === 'footnoteDef') {
+    const { prefix, body, number } = footnoteDefParts(block);
+    if (!number) return esc(prefix) + renderInline(body, doc);
+    return `<span class="syntax">${esc(prefix)}</span>${footnoteBack(number)}` + renderInline(body, doc);
+  }
+  if (block.type === 'linkDef') {
+    const { prefix, url, suffix } = linkDefParts(block);
+    const safe = /^(?:https?:|mailto:)/i.test(url);
+    return esc(prefix) + (safe ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>` : esc(url)) + esc(suffix);
   }
   if (block.type === 'heading') {
     const { content, prefix, suffix, underline } = headingParts(block);
     return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') +
-      renderInline(content) +
+      renderInline(content, doc) +
       (suffix ? `<span class="syntax">${esc(suffix)}</span>` : '') +
       (underline !== null ? `<span class="syntax setext-underline">\n${esc(underline)}</span>` : '');
   }
@@ -154,24 +185,25 @@ function decorate(block) {
   if (task) {
     prefix = task[0];
     const checked = task[2].toLowerCase() === 'x';
-    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length))}</span>`;
+    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length), doc)}</span>`;
   }
-  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length));
+  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length), doc);
 }
 function render(sel = null) {
+  doc = buildDocContext(blocks);
   const existing = new Map([...editor.children].map((n) => [n.dataset.id, n]));
   const kept = new Set();
   blocks.forEach((block, index) => {
     let node = existing.get(block.id);
     if (!node) { node = document.createElement('div'); node.dataset.id = block.id; }
     kept.add(node);
-    const key = block.type + ':' + block.raw;
+    const key = blockKey(block);
     if (node._key !== key) {
       node.innerHTML = block.raw ? decorate(block) : '<br>';
       node._key = key;
       node._stale = block.type === 'code' && block.id === activeId;
     }
-    node.className = `block ${block.type}${needsPreview(block) ? ' rich-block' : ''}${block.id === activeId ? ' active' : ''}`;
+    node.className = `block ${TYPE_CLASS[block.type] || block.type}${needsPreview(block) ? ' rich-block' : ''}${block.id === activeId ? ' active' : ''}`;
     const indent = block.raw.match(/^[ \t]*/)[0].replaceAll('\t', '    ').length;
     node.style.setProperty('--indent', `${Math.min(indent / 2, 16) * 22}px`);
     const task = block.type === 'list' && /^\s*(?:[-+*]|\d+[.)])\s+\[[ xX]\]\s/.test(block.raw);
@@ -194,7 +226,7 @@ function refreshCodePreview(id) {
   const block = blocks.find((candidate) => candidate.id === id);
   if (!node || !block || block.type !== 'code' || !node._stale) return;
   node.innerHTML = decorate(block);
-  node._key = block.type + ':' + block.raw;
+  node._key = blockKey(block);
   node._stale = false;
 }
 
@@ -706,11 +738,16 @@ $('name-dialog').addEventListener('close', () => {
     toast('新的一页，开始落笔吧');
   } else { updateUI(); persist(); toast('已更新下载文件名'); }
 });
+function flashAnchor(node) {
+  node.classList.add('flash');
+  clearTimeout(node._flash);
+  node._flash = setTimeout(() => node.classList.remove('flash'), 900);
+}
 editor.addEventListener('mousedown', (event) => {
   if (composing) return;
   if (event.target.closest('.task-box')) event.preventDefault();
   const preview = event.target.closest('.block-preview');
-  if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary')) {
+  if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary') && !event.target.closest('a[href^="#ink-"]')) {
     event.preventDefault();
     const id = preview.parentElement.dataset.id;
     const index = blocks.findIndex(b => b.id === id);
@@ -733,6 +770,14 @@ editor.addEventListener('click', (event) => {
   const link = event.target.closest('a');
   if (link) {
     event.preventDefault();
+    const internal = /^#ink-(fn|ref)-(\d+)$/.exec(link.getAttribute('href') || '');
+    if (internal) {
+      const pair = doc?.byNumber.get(Number(internal[2]));
+      const targetId = internal[1] === 'fn' ? pair?.defBlockId : pair?.refBlockId;
+      const target = targetId ? editor.querySelector(`[data-id="${targetId}"]`) : null;
+      if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); flashAnchor(target); }
+      return;
+    }
     if (event.ctrlKey || event.metaKey) window.open(link.href, '_blank', 'noopener,noreferrer');
   }
 });
@@ -909,9 +954,9 @@ if (desktop) {
   $('save').title = '保存到原文件 Ctrl+S；另存为 Ctrl+Shift+S';
   $('rename').title = '另存为新名称';
   $('dirty').setAttribute('aria-label', '尚未保存的修改');
-  document.querySelector('.edition').innerHTML = 'WINDOWS DESKTOP <span>04</span>';
-  document.querySelector('.mvp').textContent = 'Windows v0.4';
-  $('help').innerHTML = '<strong>墨页 Windows · 文字留在你的电脑。</strong> Ctrl+N 新建，Ctrl+O 打开，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为；Ctrl+F 查找，Ctrl+H 替换，Ctrl+B / I 格式，Ctrl+K 链接，Ctrl+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做；Ctrl+/ 源码视图，F8 专注，F11 全屏，Esc 退出专注。<br><small>支持表格与对齐、分割线、多级列表、任务、安全 HTML、转义字符与本地 KaTeX 数学排版。代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。点击复杂块编辑原文，离开后预览；Tab / Shift+Tab 缩进列表或移动表格单元格。Ctrl+点击链接在系统浏览器打开。纯离线，无云端上传；恢复草稿不代替保存文件。打开 UTF-8 / UTF-8 BOM 的 .md / .markdown / .txt（不超过 10 MB）；保留原换行方式。GBK 等编码请先转为 UTF-8。支持 Windows 10/11 64 位；真实中文输入法仍需设备验证。不含图片与完整 CommonMark。<span>开源组件许可见安装目录 THIRD-PARTY-NOTICES.txt。</span></small>';
+  document.querySelector('.edition').innerHTML = 'WINDOWS DESKTOP <span>05</span>';
+  document.querySelector('.mvp').textContent = 'Windows v0.5';
+  $('help').innerHTML = '<strong>墨页 Windows · 文字留在你的电脑。</strong> Ctrl+N 新建，Ctrl+O 打开，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为；Ctrl+F 查找，Ctrl+H 替换，Ctrl+B / I 格式，Ctrl+K 链接，Ctrl+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做；Ctrl+/ 源码视图，F8 专注，F11 全屏，Esc 退出专注。<br><small>支持表格与对齐、分割线、多级列表、任务、安全 HTML、转义字符与本地 KaTeX 数学排版。代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。脚注 [^标签] 与链接引用 [文字][标签] 可用，定义写在顶层行；点击角标跳到定义。点击复杂块编辑原文，离开后预览；Tab / Shift+Tab 缩进列表或移动表格单元格。Ctrl+点击链接在系统浏览器打开。纯离线，无云端上传；恢复草稿不代替保存文件。打开 UTF-8 / UTF-8 BOM 的 .md / .markdown / .txt（不超过 10 MB）；保留原换行方式。GBK 等编码请先转为 UTF-8。支持 Windows 10/11 64 位；真实中文输入法仍需设备验证。不含图片与完整 CommonMark。<span>开源组件许可见安装目录 THIRD-PARTY-NOTICES.txt。</span></small>';
   desktop.onCommand(nativeCommand);
   await runDesktop('restore');
   desktopReady = true;

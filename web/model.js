@@ -18,6 +18,10 @@ const QUOTE_RE = /^( {0,3})(>[ \t]?)(.*)$/;
 const HR_RE = /^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/;
 const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
 const HTML_OPEN_RE = /^ {0,3}<([A-Za-z][\w:-]*)(?:\s[^>]*)?>/;
+// Cross-block definitions are top-level only: ` {0,3}` indent cap keeps list and
+// indented-code continuations out of the definition namespace.
+const FOOTNOTE_DEF_RE = /^ {0,3}\[\^([^\]\s]{1,64})\]:[ \t]*(.*)$/;
+const LINK_DEF_RE = /^ {0,3}\[([^^\]\s][^\]\s]{0,63})\]:[ \t]*(\S+)(?:[ \t]+"([^"]*)")?$/;
 const HTML_BLOCK_TAGS = new Set(['address','article','aside','blockquote','details','dialog','dd','div','dl','dt','fieldset','figcaption','figure','footer','form','h1','h2','h3','h4','h5','h6','header','hr','li','main','nav','ol','p','pre','section','summary','table','tbody','td','tfoot','th','thead','tr','ul','script','style','template']);
 const HTML_VOID_TAGS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
 
@@ -41,6 +45,8 @@ export function classify(raw) {
   }
   const fence=FENCE_RE.exec(first); if (fence) return {type:'code',prefix:fence[1],fence:fence[1][0],fenceLength:fence[1].length,info:fence[2].trim()||undefined};
   if (/^ {0,3}(?:\$\$|\\\[)/.test(first)) return {type:'math',delimiter:first.match(/^ {0,3}(\$\$|\\\[)/)[1]};
+  const footnote=FOOTNOTE_DEF_RE.exec(first); if (footnote) return {type:'footnoteDef',label:footnote[1],body:footnote[2]};
+  const linkDef=LINK_DEF_RE.exec(first); if (linkDef) return {type:'linkDef',label:linkDef[1],url:linkDef[2],title:linkDef[3]};
   if (HR_RE.test(first)) return {type:'hr'};
   const heading=HEADING_RE.exec(first); if (heading) return {type:'heading',level:heading[2].length,prefix:heading[2]};
   const list=classifyList(first); if (list) return list;
@@ -51,7 +57,11 @@ export function classify(raw) {
 function isFenceClose(line, open) { const m=/^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line); return Boolean(m && m[1][0]===open[0] && m[1].length>=open.length); }
 function isMathClose(line, opening) { return opening==='$$' ? /^ {0,3}\$\$\s*$/.test(line) : /^ {0,3}\\\]\s*$/.test(line); }
 function hasInlineMathClose(line, opening) { const start=line.search(opening==='$$' ? /\$\$/ : /\\\[/); const close=opening==='$$' ? line.indexOf('$$',start+2) : line.indexOf('\\]',start+2); return start>=0 && close>=0 && /^\s*$/.test(line.slice(close+2)); }
-function isSpecialLine(line, lines, index) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
+function isDefinitionLine(line) { return FOOTNOTE_DEF_RE.test(line) || LINK_DEF_RE.test(line); }
+// Like CommonMark, a definition never interrupts a paragraph — and, in this flat model, never
+// escapes a list item either. Every other block is already closed, so a definition after a
+// heading, rule, quote, table, fence, HTML or another definition starts its own block.
+function isSpecialLine(line, lines, index, inOpenBlock = false) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||(!inOpenBlock&&isDefinitionLine(line))||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
 function nextId(used,serial) { let id; do id=`block-${serial.value++}`; while(used.has(id)); used.add(id); return id; }
 
 export function parseBlocks(text, previous=[]) {
@@ -72,10 +82,10 @@ export function parseBlocks(text, previous=[]) {
     const mathOpen=/^ {0,3}(\$\$|\\\[)/.exec(line); if(mathOpen){const start=i++, delim=mathOpen[1]; if(!hasInlineMathClose(line,delim)){ while(i<lines.length&&!isMathClose(lines[i],delim))i++; if(i<lines.length)i++; } parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
     if(classifyHtml(line)){ const start=i++, htmlInfo=classifyHtml(line), tag=htmlInfo.tag; const close=new RegExp(`</${tag}\\s*>`,'i'); const selfClosing=/\/\s*>\s*$/.test(line)||HTML_VOID_TAGS.has(tag); if(!selfClosing&&!close.test(line)){ while(i<lines.length&&!close.test(lines[i])&&(tag==='script'||tag==='style'||!/^\s*$/.test(lines[i])))i++; if(i<lines.length&&close.test(lines[i]))i++; } parsed.push({...htmlInfo,raw:lines.slice(start,i).join('\n')}); continue; }
     if (tableLine(line) && i+1<lines.length && TABLE_SEPARATOR_RE.test(lines[i+1])) { const start=i; i+=2; while(i<lines.length&&tableLine(lines[i]))i++; const raw=lines.slice(start,i).join('\n'); parsed.push({...classify(raw),raw}); continue; }
-    if (isSpecialLine(line,lines,i)) { const list=classifyList(line); if(list){ const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i))i++; parsed.push({...list,raw:lines.slice(start,i).join('\n')}); } else { parsed.push({...classify(line),raw:line}); i++; } continue; }
+    if (isSpecialLine(line,lines,i)) { const list=classifyList(line); if(list){ const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i,true))i++; parsed.push({...list,raw:lines.slice(start,i).join('\n')}); } else { parsed.push({...classify(line),raw:line}); i++; } continue; }
     const start = i;
     let end = i;
-    while (end < lines.length && !/^\s*$/.test(lines[end]) && !isSpecialLine(lines[end], lines, end)) {
+    while (end < lines.length && !/^\s*$/.test(lines[end]) && !isSpecialLine(lines[end], lines, end, true)) {
       if (end > start && setextLevel(lines[end])) break;
       end++;
     }
@@ -94,6 +104,57 @@ export function parseBlocks(text, previous=[]) {
   return parsed.map((b,n)=>{let id=matches[n], x=old[n];if(!id&&x?.id&&!used.has(x.id)){id=x.id;used.add(id);reserved.add(id);}if(!id)id=nextId(reserved,serial);return {id,...b};});
 }
 export function serialize(blocks){return (Array.isArray(blocks)?blocks:[]).map(b=>String(b?.raw??'')).join('\n');}
+
+const FOOTNOTE_REF_RE = /(?<!\\)\[\^([^\]\s]{1,64})\]/g;
+function normalizeLabel(label){return String(label??'').trim().toLowerCase();}
+// References inside code, math, raw HTML, autolink targets or link destinations never become
+// anchors, so they must not consume a footnote number either. What is left must match exactly
+// what the two render paths would turn into an anchor.
+function scannableText(block){
+  if(block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
+  // A definition's own `[^label]:` marker is not a reference, but its body may hold one.
+  const raw=String(block.raw??'');
+  const text=block.type==='footnoteDef'?raw.replace(/^ {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*/,''):raw;
+  return text
+    .replace(/(`+)[\s\S]*?\1/g,'')
+    .replace(/\$\$[\s\S]*?\$\$/g,'')
+    .replace(/\\\[[\s\S]*?\\\]/g,'')
+    .replace(/\\\([\s\S]*?\\\)/g,'')
+    .replace(/\$[^$\n]*\$/g,'')
+    .replace(/\]\([^)]*\)/g,']')
+    .replace(/<[^<>\s]*>/g,'');
+}
+
+export function buildDocContext(blocks){
+  const list=Array.isArray(blocks)?blocks:[], footnotes=new Map(), links=new Map(), order=[], duplicateFootnotes=new Set(), duplicateLinks=new Set();
+  for(const block of list){
+    if(block.type==='footnoteDef'){
+      const key=normalizeLabel(block.label);
+      if(footnotes.has(key)){duplicateFootnotes.add(key);continue;}
+      footnotes.set(key,{label:block.label,body:block.body,blockId:block.id,number:0,refBlockId:null});
+    } else if(block.type==='linkDef'){
+      const key=normalizeLabel(block.label);
+      if(links.has(key)){duplicateLinks.add(key);continue;}
+      links.set(key,{label:block.label,url:block.url,title:block.title,blockId:block.id});
+    }
+  }
+  for(const block of list){
+    const text=scannableText(block); if(!text.includes('[^'))continue;
+    for(const match of text.matchAll(FOOTNOTE_REF_RE)){
+      const entry=footnotes.get(normalizeLabel(match[1]));
+      // A definition that points at itself would flash its own block, so it stays literal.
+      if(!entry||entry.refBlockId||(block.type==='footnoteDef'&&entry.blockId===block.id))continue;
+      entry.refBlockId=block.id; entry.number=order.length+1; order.push(normalizeLabel(match[1]));
+    }
+  }
+  const defNumbers = new Map(), byNumber = new Map();
+  for (const entry of footnotes.values()) {
+    if (!entry.number) continue;
+    defNumbers.set(entry.blockId, entry.number);
+    byNumber.set(entry.number, { defBlockId: entry.blockId, refBlockId: entry.refBlockId });
+  }
+  return {footnotes,links,order,duplicateFootnotes,duplicateLinks,defNumbers,byNumber};
+}
 function syntax(marker){return `<span class="syntax">${escape(marker)}</span>`;}
 function isSafeLinkTarget(url){return /^(?:https?:|mailto:)/i.test(url)||/^#[^\s]*$/.test(url);}
 
@@ -116,7 +177,7 @@ function startsUrl(text, pos) {
   return /^(?:https?:\/\/|mailto:)/i.test(text.slice(pos));
 }
 
-export function renderInline(raw){
+export function renderInline(raw, doc = null){
   const input=String(raw??'');
   const render=(text,allowCode=true,allowLinks=true)=>{let out='',pos=0;
     while(pos<text.length){
@@ -132,6 +193,28 @@ export function renderInline(raw){
         }
       }
       if(text[pos]==='\\' && pos+1<text.length && /[\\`*_[\]~<>()[\]{}#+.!|_-]/.test(text[pos+1])) { out+=syntax('\\')+escape(text[pos+1]); pos+=2; continue; }
+      if (doc && text[pos] === '[' && text[pos + 1] === '^') {
+        const ref = text.slice(pos).match(/^\[\^([^\]\s]{1,64})\]/);
+        const entry = ref ? doc.footnotes.get(normalizeLabel(ref[1])) : null;
+        if (entry && entry.number) {
+          // The number is not in the Markdown source, so it ships as CSS-generated content: an
+          // empty anchor keeps DOM text byte-equal to raw, which the caret mapping depends on.
+          out += syntax(ref[0]) + `<sup class="fn-ref"><a href="#ink-fn-${entry.number}" data-fn="${entry.number}" aria-label="脚注 ${entry.number}"></a></sup>`;
+          pos += ref[0].length;
+          continue;
+        }
+      }
+      if (doc && text[pos] === '[') {
+        const ref = text.slice(pos).match(/^\[([^\]\n]+)\]\[([^\]\s]{1,64})\]/);
+        const entry = ref ? doc.links.get(normalizeLabel(ref[2])) : null;
+        if (entry) {
+          const labelHtml = render(ref[1], allowCode, false);
+          const title = entry.title ? ` title="${escape(entry.title)}"` : '';
+          out += syntax('[') + (isSafeLinkTarget(entry.url) ? `<a href="${escape(entry.url)}"${title} target="_blank" rel="noopener noreferrer">${labelHtml}</a>` : labelHtml) + syntax(`][${ref[2]}]`);
+          pos += ref[0].length;
+          continue;
+        }
+      }
       if(allowCode&&text[pos]==='`'){let n=1;while(text[pos+n]==='`')n++;const marker='`'.repeat(n), end=text.indexOf(marker,pos+n);if(end!==-1){let content=text.slice(pos+n,end), padded=content.startsWith(' ')&&content.endsWith(' ')&&content.trim();if(padded)content=content.slice(1,-1);out+=syntax(marker)+(padded?' ':'')+`<code>${escape(content)}</code>`+(padded?' ':'')+syntax(marker);pos=end+n;continue;}}
       const link=text.slice(pos).match(/^\[([^\]\n]+)\]\(([^)\s]+)\)/);if(link){const[,label,url]=link, labelHtml=render(label,allowCode,false), suffix=`](${url})`;out+=syntax('[')+(isSafeLinkTarget(url)?`<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>`:labelHtml)+syntax(suffix);pos+=link[0].length;continue;}
       const strong=text.slice(pos).match(/^(\*\*|__)(?=\S)([\s\S]+?)\1/);if(strong){out+=syntax(strong[1])+`<strong>${render(strong[2],false,allowLinks)}</strong>`+syntax(strong[1]);pos+=strong[0].length;continue;}

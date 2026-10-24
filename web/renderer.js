@@ -42,6 +42,41 @@ md.inline.ruler.before('escape', 'ink_math', (state, silent) => {
   state.pos = end + close.length;
   return true;
 });
+const INK_SAFE_TARGET_RE = /^(?:https?:|mailto:|#[^\s]*$)/i;
+// Rich blocks (tables, HTML, formulas) render through markdown-it, which knows nothing about
+// the document-wide definition tables; this rule resolves [^label] and [text][label] against env.inkDoc.
+md.inline.ruler.before('link', 'ink_ref', (state, silent) => {
+  const doc = state.env?.inkDoc;
+  if (!doc || state.src[state.pos] !== '[') return false;
+  const rest = state.src.slice(state.pos);
+  const foot = /^\[\^([^\]\s]{1,64})\]/.exec(rest);
+  if (foot) {
+    const entry = doc.footnotes.get(foot[1].trim().toLowerCase());
+    if (!entry?.number) return false;
+    if (!silent) {
+      const token = state.push('html_inline', '', 0);
+      token.content = `<sup><a href="#ink-fn-${entry.number}">${entry.number}</a></sup>`;
+      token.markup = 'ink_footnote';
+    }
+    state.pos += foot[0].length;
+    return true;
+  }
+  const ref = /^\[([^\]\n]+)\]\[([^\]\s]{1,64})\]/.exec(rest);
+  if (!ref) return false;
+  const entry = doc.links.get(ref[2].trim().toLowerCase());
+  if (!entry || !INK_SAFE_TARGET_RE.test(entry.url)) return false;
+  if (!silent) {
+    const open = state.push('link_open', 'a', 1);
+    open.attrs = [['href', entry.url], ...(entry.title ? [['title', entry.title]] : []), ['target', '_blank'], ['rel', 'noopener noreferrer']];
+    open.markup = 'ink_linkref';
+    const label = [];
+    state.md.inline.parse(ref[1], state.md, state.env, label);
+    state.tokens.push(...label);
+    state.push('link_close', 'a', -1).markup = 'ink_linkref';
+  }
+  state.pos += ref[0].length;
+  return true;
+});
 for (const name of ['th_open', 'td_open']) md.renderer.rules[name] = (tokens, index, options, env, self) => {
   const t = tokens[index]; const style = t.attrGet('style');
   if (style) { t.attrs = t.attrs.filter(([k]) => k !== 'style'); t.attrSet('align', style.split(':')[1]); }
@@ -90,6 +125,7 @@ export function previewMarkdown(raw, type = 'paragraph', options = {}) {
     inkHighlight: options.highlight !== false,
     inkCodeFragments: codeFragments,
     inkCodeSeed: codeSeed,
+    inkDoc: options.doc || null,
   };
   const formula = (src, display) => {
     const key = `${seed}${formulas.length}END`;
