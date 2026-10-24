@@ -100,6 +100,39 @@ export function parseBlocks(text, previous=[]) {
   return parsed.map((b,n)=>{let id=matches[n], x=old[n];if(!id&&x?.id&&!used.has(x.id)){id=x.id;used.add(id);reserved.add(id);}if(!id)id=nextId(reserved,serial);return {id,...b};});
 }
 export function serialize(blocks){return (Array.isArray(blocks)?blocks:[]).map(b=>String(b?.raw??'')).join('\n');}
+
+const FOOTNOTE_REF_RE = /(?<!\\)\[\^([^\]\s]{1,64})\]/g;
+function normalizeLabel(label){return String(label??'').trim().toLowerCase();}
+// References inside code spans, fenced or indented code, math and raw HTML never become
+// anchors, so they must not consume a footnote number either.
+function scannableText(block){
+  if(block.type==='footnoteDef'||block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
+  return String(block.raw??'').replace(/`[^`\n]*`/g,'');
+}
+
+export function buildDocContext(blocks){
+  const list=Array.isArray(blocks)?blocks:[], footnotes=new Map(), links=new Map(), order=[], duplicateFootnotes=new Set(), duplicateLinks=new Set();
+  for(const block of list){
+    if(block.type==='footnoteDef'){
+      const key=normalizeLabel(block.label);
+      if(footnotes.has(key)){duplicateFootnotes.add(key);continue;}
+      footnotes.set(key,{label:block.label,body:block.body,blockId:block.id,number:0,refBlockId:null});
+    } else if(block.type==='linkDef'){
+      const key=normalizeLabel(block.label);
+      if(links.has(key)){duplicateLinks.add(key);continue;}
+      links.set(key,{label:block.label,url:block.url,title:block.title,blockId:block.id});
+    }
+  }
+  for(const block of list){
+    const text=scannableText(block); if(!text.includes('[^'))continue;
+    for(const match of text.matchAll(FOOTNOTE_REF_RE)){
+      const entry=footnotes.get(normalizeLabel(match[1]));
+      if(!entry||entry.refBlockId)continue;
+      entry.refBlockId=block.id; entry.number=order.length+1; order.push(normalizeLabel(match[1]));
+    }
+  }
+  return {footnotes,links,order,duplicateFootnotes,duplicateLinks};
+}
 function syntax(marker){return `<span class="syntax">${escape(marker)}</span>`;}
 function isSafeLinkTarget(url){return /^(?:https?:|mailto:)/i.test(url)||/^#[^\s]*$/.test(url);}
 

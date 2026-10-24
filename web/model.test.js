@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, escape, parseBlocks, renderInline, serialize } from './model.js';
+import { buildDocContext, classify, escape, parseBlocks, renderInline, serialize } from './model.js';
 
 test('parses supported block types and round-trips LF text', () => {
   const source = '# Title\nA paragraph\ncontinued\n\n- item\n> quote\n~~~js\nconst x = 1;\n~~~\n';
@@ -310,4 +310,57 @@ test('does not parse definitions nested in a list, quote or indented code', () =
   assert.equal(parseBlocks('> [^a]: x\n')[0].type, 'quote');
   const indented = parseBlocks('\n    [^a]: x\n');
   assert.deepEqual(indented.map(({ type }) => type), ['blank', 'code', 'blank']);
+});
+
+test('numbers footnotes by first reference order and leaves unreferenced definitions unnumbered', () => {
+  const blocks = parseBlocks('A[^b] B[^a]\n\n[^a]: one\n[^b]: two\n[^c]: three\n');
+  const ctx = buildDocContext(blocks);
+  const defA = blocks.find((b) => b.type === 'footnoteDef' && b.label === 'a');
+  const para = blocks.find((b) => b.type === 'paragraph');
+  assert.equal(ctx.footnotes.get('b').number, 1);
+  assert.equal(ctx.footnotes.get('a').number, 2);
+  assert.equal(ctx.footnotes.get('c').number, 0);
+  assert.equal(ctx.footnotes.get('a').blockId, defA.id);
+  assert.equal(ctx.footnotes.get('a').refBlockId, para.id);
+  assert.equal(ctx.footnotes.get('c').refBlockId, null);
+  assert.deepEqual([...ctx.order], ['b', 'a']);
+});
+
+test('matches footnote labels case-insensitively and skips references inside inline code', () => {
+  const ctx = buildDocContext(parseBlocks('Use `[^a]` here and [^ABC] there\n\n[^abc]: note\n'));
+  assert.equal(ctx.footnotes.get('abc').number, 1);
+  assert.equal(ctx.footnotes.get('abc').label, 'abc');
+});
+
+test('does not number an escaped footnote reference', () => {
+  const ctx = buildDocContext(parseBlocks('Literal \\[^a] here and [^b] there\n\n[^a]: one\n[^b]: two\n'));
+  assert.equal(ctx.footnotes.get('a').number, 0);
+  assert.equal(ctx.footnotes.get('a').refBlockId, null);
+  assert.equal(ctx.footnotes.get('b').number, 1);
+});
+
+test('skips references inside fenced code and other container blocks', () => {
+  const blocks = parseBlocks('Real [^a] ref\n\n```md\nfenced [^b]\n```\n\n[^a]: one\n[^b]: two\n');
+  const ctx = buildDocContext(blocks);
+  assert.equal(ctx.footnotes.get('a').number, 1);
+  assert.equal(ctx.footnotes.get('b').number, 0);
+  assert.equal(ctx.footnotes.get('b').refBlockId, null);
+});
+
+test('first definition wins and later duplicates are reported instead of hidden', () => {
+  const blocks = parseBlocks('Text[^a]\n\n[^a]: first\n[^a]: second\n\n[repo]: https://a.example\n[repo]: https://b.example\n');
+  const ctx = buildDocContext(blocks);
+  assert.equal(ctx.footnotes.get('a').blockId, blocks.filter((b) => b.type === 'footnoteDef')[0].id);
+  assert.equal(ctx.footnotes.get('a').body, 'first');
+  assert.deepEqual([...ctx.duplicateFootnotes], ['a']);
+  assert.deepEqual([...ctx.duplicateLinks], ['repo']);
+  assert.equal(ctx.links.get('repo').url, 'https://a.example');
+  assert.equal(ctx.links.get('repo').blockId, blocks.filter((b) => b.type === 'linkDef')[0].id);
+});
+
+test('collects link reference definitions with their optional title', () => {
+  const ctx = buildDocContext(parseBlocks('[repo]: https://example.com "Repo title"\n[docs]: https://d.example\n'));
+  assert.equal(ctx.links.get('repo').url, 'https://example.com');
+  assert.equal(ctx.links.get('repo').title, 'Repo title');
+  assert.equal(ctx.links.get('docs').title, undefined);
 });
