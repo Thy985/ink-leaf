@@ -10,8 +10,8 @@ const STORAGE = desktop ? 'inkstone.desktop.draft.v03' : 'inkstone.draft.v03';
 let desktopReady = false;
 let desktopBusy = false;
 let desktopPath = null;
-const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.3**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。\n"
-  .replace('这里是 **墨页 v0.3**。', desktop ? '这里是 **墨页 Windows v0.3**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.3**。')
+const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.4**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。\n"
+  .replace('这里是 **墨页 v0.4**。', desktop ? '这里是 **墨页 Windows v0.4**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.4**。')
   .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : isAndroid ? '文字留在此设备。点「导入」打开 Markdown，点「导出 .md」通过系统文件选择器保存新文件。草稿在应用内自动保留；请定期导出备份。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。');
 let blocks = [];
 let activeId = null;
@@ -909,9 +909,9 @@ if (desktop) {
   $('save').title = '保存到原文件 Ctrl+S；另存为 Ctrl+Shift+S';
   $('rename').title = '另存为新名称';
   $('dirty').setAttribute('aria-label', '尚未保存的修改');
-  document.querySelector('.edition').innerHTML = 'WINDOWS DESKTOP <span>03</span>';
-  document.querySelector('.mvp').textContent = 'Windows v0.3';
-  $('help').innerHTML = '<strong>墨页 Windows · 文字留在你的电脑。</strong> Ctrl+N 新建，Ctrl+O 打开，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为；Ctrl+F 查找，Ctrl+H 替换，Ctrl+B / I 格式，Ctrl+K 链接，Ctrl+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做；Ctrl+/ 源码视图，F8 专注，F11 全屏，Esc 退出专注。<br><small>支持表格与对齐、分割线、多级列表、任务、安全 HTML、转义字符与本地 KaTeX 数学排版。点击复杂块编辑原文，离开后预览；Tab / Shift+Tab 缩进列表或移动表格单元格。Ctrl+点击链接在系统浏览器打开。纯离线，无云端上传；恢复草稿不代替保存文件。打开 UTF-8 / UTF-8 BOM 的 .md / .markdown / .txt（不超过 10 MB）；保留原换行方式。GBK 等编码请先转为 UTF-8。支持 Windows 10/11 64 位；真实中文输入法仍需设备验证。不含图片、代码高亮与完整 CommonMark。<span>开源组件许可见安装目录 THIRD-PARTY-NOTICES.txt。</span></small>';
+  document.querySelector('.edition').innerHTML = 'WINDOWS DESKTOP <span>04</span>';
+  document.querySelector('.mvp').textContent = 'Windows v0.4';
+  $('help').innerHTML = '<strong>墨页 Windows · 文字留在你的电脑。</strong> Ctrl+N 新建，Ctrl+O 打开，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为；Ctrl+F 查找，Ctrl+H 替换，Ctrl+B / I 格式，Ctrl+K 链接，Ctrl+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做；Ctrl+/ 源码视图，F8 专注，F11 全屏，Esc 退出专注。<br><small>支持表格与对齐、分割线、多级列表、任务、安全 HTML、转义字符与本地 KaTeX 数学排版。代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。点击复杂块编辑原文，离开后预览；Tab / Shift+Tab 缩进列表或移动表格单元格。Ctrl+点击链接在系统浏览器打开。纯离线，无云端上传；恢复草稿不代替保存文件。打开 UTF-8 / UTF-8 BOM 的 .md / .markdown / .txt（不超过 10 MB）；保留原换行方式。GBK 等编码请先转为 UTF-8。支持 Windows 10/11 64 位；真实中文输入法仍需设备验证。不含图片与完整 CommonMark。<span>开源组件许可见安装目录 THIRD-PARTY-NOTICES.txt。</span></small>';
   desktop.onCommand(nativeCommand);
   await runDesktop('restore');
   desktopReady = true;
