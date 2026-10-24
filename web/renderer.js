@@ -5,6 +5,25 @@ import hljs from 'highlight.js/lib/common';
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: false, breaks: false });
 md.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+const AUTO_LINK_SCHEME_RE = /^(?:https?:\/\/|mailto:)/i;
+md.core.ruler.after('linkify', 'ink_restrict_linkify', (state) => {
+  for (const block of state.tokens) {
+    const children = block.children;
+    if (!children) continue;
+    for (let i = children.length - 1; i >= 0; i--) {
+      const token = children[i];
+      if (token.type !== 'link_open' || token.markup !== 'linkify') continue;
+      if (AUTO_LINK_SCHEME_RE.test(token.attrGet('href') || '')) continue;
+      children.splice(i, 1);
+      for (let j = i; j < children.length; j++) {
+        if (children[j].type === 'link_close' && children[j].markup === 'linkify') {
+          children.splice(j, 1);
+          break;
+        }
+      }
+    }
+  }
+});
 md.inline.ruler.before('escape', 'ink_math', (state, silent) => {
   const start = state.pos;
   let open, close;

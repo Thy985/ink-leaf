@@ -121,7 +121,7 @@ export function renderInline(raw){
   const render=(text,allowCode=true,allowLinks=true)=>{let out='',pos=0;
     while(pos<text.length){
       if (allowLinks && startsUrl(text, pos)) {
-        const match = text.slice(pos).match(/^(?:https?:\/\/|mailto:)[^\s<>"'`]+/i);
+        const match = text.slice(pos).match(/^(?:https?:\/\/|mailto:)[^\s<>"'`，。；：！？、（）【】「」『』《》〈〉“”‘’]+/i);
         if (match) {
           const href = trimUrlTail(match[0]);
           if (href) {

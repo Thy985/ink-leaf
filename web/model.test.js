@@ -247,3 +247,25 @@ test('trims trailing URL punctuation and unmatched parentheses', () => {
   assert.match(html, /href="https:\/\/example\.com\/a"/);
   assert.doesNotMatch(html, /href="https:\/\/example\.com\/a\)/);
 });
+
+test('stops bare URLs before fullwidth brackets', () => {
+  for (const [source, before, after] of [['（https://example.com）', '（', '）'], ['「https://example.com」', '「', '」']]) {
+    const html = renderInline(source);
+    const anchor = /(<a\b[^>]*>)(.*?)<\/a>/.exec(html);
+    assert.equal(/<a href="([^"]*)"/.exec(html)?.[1], 'https://example.com');
+    assert.equal(anchor?.[2], 'https://example.com');
+    assert.equal(html.slice(0, anchor.index), before);
+    assert.equal(html.slice(anchor.index + anchor[0].length), after);
+    assert.equal(html.replace(/<[^>]+>/g, ''), source);
+  }
+});
+
+test('stops a bare URL at interior fullwidth punctuation', () => {
+  const source = '见https://example.com/a，参考';
+  const html = renderInline(source);
+  const anchor = /(<a\b[^>]*>)(.*?)<\/a>/.exec(html);
+  assert.equal(/<a href="([^"]*)"/.exec(html)?.[1], 'https://example.com/a');
+  assert.equal(anchor?.[2], 'https://example.com/a');
+  assert.equal(html.slice(anchor.index + anchor[0].length), '，参考');
+  assert.equal(html.replace(/<[^>]+>/g, ''), source);
+});

@@ -281,6 +281,30 @@ with sync_playwright() as playwright:
         cases.append("富块裸 URL 链接化")
         print("PASS", cases[-1], flush=True)
 
+        raw = (
+            "| name | url |\n"
+            "| --- | --- |\n"
+            "| ftp | ftp://example.com/x |\n"
+            "| protocol | //example.com/x |\n"
+            "| fuzzy | www.example.com |\n"
+            "| email | team@example.com |\n"
+        )
+        load(page, raw)
+        blur(page)
+        assert page.locator(".block-preview table a").count() == 0
+        assert markdown(page) == raw
+        cases.append("富块仅链接化 http/https/mailto")
+        print("PASS", cases[-1], flush=True)
+
+        raw = "（https://example.com）后文"
+        load(page, raw)
+        blur(page)
+        assert page.locator("#editor a").count() == 1
+        assert page.locator("#editor a[href='https://example.com']").count() == 1
+        assert markdown(page) == raw
+        cases.append("全角括号不并入裸 URL")
+        print("PASS", cases[-1], flush=True)
+
         page.set_viewport_size({"width": 393, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         page.locator("#theme-toggle").click()
