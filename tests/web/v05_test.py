@@ -258,6 +258,24 @@ with sync_playwright() as playwright:
         cases.append("富预览的脚注定义仍保留序号与回链")
         print("PASS", cases[-1], flush=True)
 
+        # --- a definition may follow a heading directly (it cannot interrupt a paragraph) ---
+        raw = "正文[^1]\n\n# 参考文献\n[^1]: 紧跟标题的定义\n"
+        load(page, raw)
+        blur(page)
+        assert [b["type"] for b in blocks(page)] == ["paragraph", "blank", "heading", "footnoteDef", "blank"], blocks(page)
+        assert page.locator('#editor .footnote-def a[href="#ink-ref-1"]').count() == 1
+        assert page.locator('#editor sup a[href="#ink-fn-1"]').count() == 1
+        assert markdown(page) == raw
+        caret(page, 0)
+        page.keyboard.type("续")
+        page.wait_for_timeout(80)
+        assert markdown(page) == raw.replace("正文[^1]", "正文[^1]续", 1), markdown(page)
+        page.keyboard.press("Control+z")
+        page.wait_for_timeout(120)
+        assert markdown(page) == raw
+        cases.append("标题后紧跟的定义生效且段落里的定义仍算原文")
+        print("PASS", cases[-1], flush=True)
+
         # --- mixed document round-trips exactly ---
         raw = (
             "标题[^1]\n====\n\n段落 [文字][repo]\n\n| a | b |\n| --- | --- |\n| c | 注[^2] |\n\n"

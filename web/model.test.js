@@ -289,27 +289,41 @@ test('parses top-level footnote and link definitions as single-line blocks', () 
   assert.equal(serialize(blocks), source);
 });
 
-test('a definition continues the block above it unless a blank line or another definition precedes it', () => {
+test('a definition cannot interrupt an open paragraph or list item', () => {
   const paragraph = parseBlocks('A\n[^x]: B\n');
   assert.deepEqual(paragraph.map(({ type }) => type), ['paragraph', 'blank']);
   assert.equal(paragraph[0].raw, 'A\n[^x]: B');
 
-  const list = parseBlocks('- item\n  [^a]: x\n');
-  assert.deepEqual(list.map(({ type }) => type), ['list', 'blank']);
-  assert.equal(list[0].raw, '- item\n  [^a]: x');
-
-  // Quotes never absorb a following plain line in this model; the point is the def
-  // line stays an ordinary paragraph instead of being promoted and claiming a number.
-  const quote = parseBlocks('> q\n[a]: https://x.dev\n');
-  assert.deepEqual(quote.map(({ type }) => type), ['quote', 'paragraph', 'blank']);
-  assert.equal(buildDocContext(quote).links.size, 0);
-
+  // Once the paragraph has swallowed one definition line it is still open, so the next joins it.
   const chained = parseBlocks('A\n[^x]: B\n[repo]: https://example.com\n');
-  assert.deepEqual(chained.map(({ type }) => type), ['paragraph', 'linkDef', 'blank']);
+  assert.deepEqual(chained.map(({ type }) => type), ['paragraph', 'blank']);
+  assert.equal(chained[0].raw, 'A\n[^x]: B\n[repo]: https://example.com');
+  assert.equal(buildDocContext(chained).links.size, 0);
 
-  for (const source of ['A\n[^x]: B\n', '- item\n  [^a]: x\n', '> q\n[a]: https://x.dev\n']) {
+  const list = parseBlocks('- item\n[^a]: x\n');
+  assert.deepEqual(list.map(({ type }) => type), ['list', 'blank']);
+  assert.equal(list[0].raw, '- item\n[^a]: x');
+
+  for (const source of ['A\n[^x]: B\n', '- item\n[^a]: x\n', 'A\n[^x]: B\n[repo]: https://example.com\n']) {
     assert.equal(serialize(parseBlocks(source)), source);
   }
+});
+
+test('a definition after a heading, rule, quote, table, fence or HTML starts its own block', () => {
+  const cases = [
+    ['# 参考文献\n[^1]: 说明\n', ['heading', 'footnoteDef', 'blank']],
+    ['---\n[^1]: 说明\n', ['hr', 'footnoteDef', 'blank']],
+    ['> 引用\n[^1]: 说明\n', ['quote', 'footnoteDef', 'blank']],
+    ['| a | b |\n| --- | --- |\n[^1]: 说明\n', ['table', 'footnoteDef', 'blank']],
+    ['```js\ncode\n```\n[^1]: 说明\n', ['code', 'footnoteDef', 'blank']],
+    ['<div>x</div>\n[^1]: 说明\n', ['html', 'footnoteDef', 'blank']],
+  ];
+  for (const [source, types] of cases) {
+    const blocks = parseBlocks(source);
+    assert.deepEqual(blocks.map(({ type }) => type), types, source);
+    assert.equal(serialize(blocks), source);
+  }
+  assert.equal(buildDocContext(parseBlocks('正文[^1]\n\n# 参考文献\n[^1]: 说明\n')).footnotes.get('1').number, 1);
 });
 
 test('consecutive definitions each start their own block without a blank line', () => {
@@ -466,6 +480,21 @@ test('numbers a reference made inside another footnote definition body', () => {
   assert.equal(ctx.footnotes.get('a').number, 1);
   assert.equal(ctx.footnotes.get('b').number, 2);
   assert.match(renderInline('见 [^b]', ctx), /href="#ink-fn-2"/);
+});
+
+test('a definition does not number a reference to itself', () => {
+  const ctx = buildDocContext(parseBlocks('[^a]: see [^a]\n'));
+  assert.equal(ctx.footnotes.get('a').number, 0);
+  assert.deepEqual([...ctx.order], []);
+});
+
+test('does not number references inside a link destination, angle target or display math', () => {
+  const source = 'See [x](https://e.com/[^a]) and $$y [^b] z$$ and <https://e.com/[^c]> plus [^d]\n\n[^a]: 1\n[^b]: 2\n[^c]: 3\n[^d]: 4\n';
+  const ctx = buildDocContext(parseBlocks(source));
+  assert.equal(ctx.footnotes.get('a').number, 0);
+  assert.equal(ctx.footnotes.get('b').number, 0);
+  assert.equal(ctx.footnotes.get('c').number, 0);
+  assert.equal(ctx.footnotes.get('d').number, 1);
 });
 
 test('carries a link definition title onto the resolved anchor', () => {

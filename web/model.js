@@ -58,14 +58,10 @@ function isFenceClose(line, open) { const m=/^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(l
 function isMathClose(line, opening) { return opening==='$$' ? /^ {0,3}\$\$\s*$/.test(line) : /^ {0,3}\\\]\s*$/.test(line); }
 function hasInlineMathClose(line, opening) { const start=line.search(opening==='$$' ? /\$\$/ : /\\\[/); const close=opening==='$$' ? line.indexOf('$$',start+2) : line.indexOf('\\]',start+2); return start>=0 && close>=0 && /^\s*$/.test(line.slice(close+2)); }
 function isDefinitionLine(line) { return FOOTNOTE_DEF_RE.test(line) || LINK_DEF_RE.test(line); }
-// Like CommonMark, a definition cannot interrupt the block above it; but consecutive
-// definitions at the end of a document must each stay a definition.
-function startsDefinitionBlock(line, lines, index) {
-  if (!isDefinitionLine(line)) return false;
-  const previous = index > 0 ? lines[index - 1] : '';
-  return index === 0 || /^\s*$/.test(previous ?? '') || isDefinitionLine(previous);
-}
-function isSpecialLine(line, lines, index) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||startsDefinitionBlock(line,lines,index)||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
+// Like CommonMark, a definition never interrupts a paragraph — and, in this flat model, never
+// escapes a list item either. Every other block is already closed, so a definition after a
+// heading, rule, quote, table, fence, HTML or another definition starts its own block.
+function isSpecialLine(line, lines, index, inOpenBlock = false) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||(!inOpenBlock&&isDefinitionLine(line))||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
 function nextId(used,serial) { let id; do id=`block-${serial.value++}`; while(used.has(id)); used.add(id); return id; }
 
 export function parseBlocks(text, previous=[]) {
@@ -86,10 +82,10 @@ export function parseBlocks(text, previous=[]) {
     const mathOpen=/^ {0,3}(\$\$|\\\[)/.exec(line); if(mathOpen){const start=i++, delim=mathOpen[1]; if(!hasInlineMathClose(line,delim)){ while(i<lines.length&&!isMathClose(lines[i],delim))i++; if(i<lines.length)i++; } parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
     if(classifyHtml(line)){ const start=i++, htmlInfo=classifyHtml(line), tag=htmlInfo.tag; const close=new RegExp(`</${tag}\\s*>`,'i'); const selfClosing=/\/\s*>\s*$/.test(line)||HTML_VOID_TAGS.has(tag); if(!selfClosing&&!close.test(line)){ while(i<lines.length&&!close.test(lines[i])&&(tag==='script'||tag==='style'||!/^\s*$/.test(lines[i])))i++; if(i<lines.length&&close.test(lines[i]))i++; } parsed.push({...htmlInfo,raw:lines.slice(start,i).join('\n')}); continue; }
     if (tableLine(line) && i+1<lines.length && TABLE_SEPARATOR_RE.test(lines[i+1])) { const start=i; i+=2; while(i<lines.length&&tableLine(lines[i]))i++; const raw=lines.slice(start,i).join('\n'); parsed.push({...classify(raw),raw}); continue; }
-    if (isSpecialLine(line,lines,i)) { const list=classifyList(line); if(list){ const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i))i++; parsed.push({...list,raw:lines.slice(start,i).join('\n')}); } else { parsed.push({...classify(line),raw:line}); i++; } continue; }
+    if (isSpecialLine(line,lines,i)) { const list=classifyList(line); if(list){ const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i,true))i++; parsed.push({...list,raw:lines.slice(start,i).join('\n')}); } else { parsed.push({...classify(line),raw:line}); i++; } continue; }
     const start = i;
     let end = i;
-    while (end < lines.length && !/^\s*$/.test(lines[end]) && !isSpecialLine(lines[end], lines, end)) {
+    while (end < lines.length && !/^\s*$/.test(lines[end]) && !isSpecialLine(lines[end], lines, end, true)) {
       if (end > start && setextLevel(lines[end])) break;
       end++;
     }
@@ -111,8 +107,9 @@ export function serialize(blocks){return (Array.isArray(blocks)?blocks:[]).map(b
 
 const FOOTNOTE_REF_RE = /(?<!\\)\[\^([^\]\s]{1,64})\]/g;
 function normalizeLabel(label){return String(label??'').trim().toLowerCase();}
-// References inside code spans, fenced or indented code, math and raw HTML never become
-// anchors, so they must not consume a footnote number either.
+// References inside code, math, raw HTML, autolink targets or link destinations never become
+// anchors, so they must not consume a footnote number either. What is left must match exactly
+// what the two render paths would turn into an anchor.
 function scannableText(block){
   if(block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
   // A definition's own `[^label]:` marker is not a reference, but its body may hold one.
@@ -120,8 +117,12 @@ function scannableText(block){
   const text=block.type==='footnoteDef'?raw.replace(/^ {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*/,''):raw;
   return text
     .replace(/(`+)[\s\S]*?\1/g,'')
+    .replace(/\$\$[\s\S]*?\$\$/g,'')
+    .replace(/\\\[[\s\S]*?\\\]/g,'')
+    .replace(/\\\([\s\S]*?\\\)/g,'')
     .replace(/\$[^$\n]*\$/g,'')
-    .replace(/\\\([\s\S]*?\\\)/g,'');
+    .replace(/\]\([^)]*\)/g,']')
+    .replace(/<[^<>\n]*>/g,'');
 }
 
 export function buildDocContext(blocks){
@@ -141,7 +142,8 @@ export function buildDocContext(blocks){
     const text=scannableText(block); if(!text.includes('[^'))continue;
     for(const match of text.matchAll(FOOTNOTE_REF_RE)){
       const entry=footnotes.get(normalizeLabel(match[1]));
-      if(!entry||entry.refBlockId)continue;
+      // A definition that points at itself would flash its own block, so it stays literal.
+      if(!entry||entry.refBlockId||(block.type==='footnoteDef'&&entry.blockId===block.id))continue;
       entry.refBlockId=block.id; entry.number=order.length+1; order.push(normalizeLabel(match[1]));
     }
   }
