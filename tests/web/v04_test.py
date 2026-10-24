@@ -124,10 +124,12 @@ with sync_playwright() as playwright:
         cases.append("未知语言回退纯文本")
         print("PASS", cases[-1], flush=True)
 
-        raw = "```js\n" + "a" * 100001 + "\n```\n"
+        raw = "```js\n" + "const x = 1;\n" * 9000 + "```\n"
         load(page, raw)
         blur(page)
-        assert page.locator("#editor .code .hljs-keyword").count() == 0
+        preview = page.locator("#editor .code .block-preview")
+        assert preview.locator(".hljs-keyword").count() == 0
+        assert preview.locator("pre span").count() == 0
         assert markdown(page) == raw
         cases.append("超长代码回退纯文本")
         print("PASS", cases[-1], flush=True)
