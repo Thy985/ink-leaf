@@ -107,9 +107,10 @@ export function serialize(blocks){return (Array.isArray(blocks)?blocks:[]).map(b
 
 const FOOTNOTE_REF_RE = /(?<!\\)\[\^([^\]\s]{1,64})\]/g;
 function normalizeLabel(label){return String(label??'').trim().toLowerCase();}
-// References inside code, math, raw HTML, autolink targets or link destinations never become
-// anchors, so they must not consume a footnote number either. What is left must match exactly
-// what the two render paths would turn into an anchor.
+// A reference may consume a footnote number only where a render path can turn it into an anchor,
+// so each strip mirrors a swallowing rule of the two renderers: code, math, raw HTML, autolink and
+// link destinations. Over-stripping hides a live reference; under-stripping advertises one that
+// never appears and leaves a definition pointing at an invisible marker.
 function scannableText(block){
   if(block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
   // A definition's own `[^label]:` marker is not a reference, but its body may hold one.
@@ -118,11 +119,12 @@ function scannableText(block){
   return text
     .replace(/(`+)[\s\S]*?\1/g,'')
     .replace(/\$\$[\s\S]*?\$\$/g,'')
-    .replace(/\\\[[\s\S]*?\\\]/g,'')
-    .replace(/\\\([\s\S]*?\\\)/g,'')
+    .replace(/\\\[[^\s][\s\S]*?\\\]/g,'')
+    .replace(/\\\([^\s][\s\S]*?\\\)/g,'')
     .replace(/\$[^$\n]*\$/g,'')
-    .replace(/\]\([^)]*\)/g,']')
-    .replace(/<[^<>\s]*>/g,'');
+    .replace(/(?:https?:\/\/|mailto:)[^\s]*/gi,'')
+    .replace(/\]\([^)\s]*\)/g,']')
+    .replace(/<[!/A-Za-z/][^<>\n]*>/g,'');
 }
 
 export function buildDocContext(blocks){

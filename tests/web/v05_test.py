@@ -276,6 +276,24 @@ with sync_playwright() as playwright:
         cases.append("标题后紧跟的定义生效且段落里的定义仍算原文")
         print("PASS", cases[-1], flush=True)
 
+        # --- only references a renderer can anchor may take a number (rich path) ---
+        raw = 'A <!-- [^gone] --> B <b>[^live]</b> C <a href="q[^attr]r">x</a>\n\n[^gone]: 注释里的\n[^live]: 可见的\n[^attr]: 属性里的\n'
+        load(page, raw)
+        blur(page)
+        assert page.locator("#editor .footnote-def").count() == 3
+        assert page.locator("#editor sup").count() == 1, page.locator("#editor sup").count()
+        assert page.locator('#editor .block-preview sup a[href="#ink-fn-1"]').count() == 1
+        live = page.locator("#editor .footnote-def").nth(1)
+        assert live.locator('a[href="#ink-ref-1"]').count() == 1
+        for hidden in (0, 2):
+            unfired = page.locator("#editor .footnote-def").nth(hidden)
+            assert unfired.locator("a").count() == 0, unfired.inner_text()
+        assert "[^gone]:" in page.locator("#editor .footnote-def").nth(0).inner_text()
+        assert "[^attr]:" in page.locator("#editor .footnote-def").nth(2).inner_text()
+        assert markdown(page) == raw
+        cases.append("注释与标签属性里的引用不占号，可见引用正常编号")
+        print("PASS", cases[-1], flush=True)
+
         # --- mixed document round-trips exactly ---
         raw = (
             "标题[^1]\n====\n\n段落 [文字][repo]\n\n| a | b |\n| --- | --- |\n| c | 注[^2] |\n\n"
