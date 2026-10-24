@@ -269,3 +269,45 @@ test('stops a bare URL at interior fullwidth punctuation', () => {
   assert.equal(html.slice(anchor.index + anchor[0].length), '，参考');
   assert.equal(html.replace(/<[^>]+>/g, ''), source);
 });
+
+// --- v0.5 cross-block definitions ---
+
+test('parses top-level footnote and link definitions as single-line blocks', () => {
+  const source = 'para\n\n[^note]: Body text\n\n[repo]: https://example.com "Repo"\n';
+  const blocks = parseBlocks(source);
+  assert.deepEqual(blocks.map(({ type }) => ({ type })), [
+    { type: 'paragraph' }, { type: 'blank' }, { type: 'footnoteDef' }, { type: 'blank' },
+    { type: 'linkDef' }, { type: 'blank' }
+  ]);
+  assert.equal(blocks[2].raw, '[^note]: Body text');
+  assert.equal(blocks[2].label, 'note');
+  assert.equal(blocks[2].body, 'Body text');
+  assert.equal(blocks[4].raw, '[repo]: https://example.com "Repo"');
+  assert.equal(blocks[4].label, 'repo');
+  assert.equal(blocks[4].url, 'https://example.com');
+  assert.equal(blocks[4].title, 'Repo');
+  assert.equal(serialize(blocks), source);
+});
+
+test('does not let a paragraph absorb a following definition line', () => {
+  const blocks = parseBlocks('A\n[^x]: B\n[repo]: https://example.com\n');
+  assert.deepEqual(blocks.map(({ type }) => type), ['paragraph', 'footnoteDef', 'linkDef', 'blank']);
+  assert.equal(blocks[0].raw, 'A');
+  assert.equal(blocks[1].body, 'B');
+});
+
+test('accepts an empty footnote body but needs a label and a link destination', () => {
+  assert.equal(parseBlocks('[^a]:\n')[0].type, 'footnoteDef');
+  assert.equal(parseBlocks('[^a]:\n')[0].body, '');
+  assert.equal(parseBlocks('[^]: x\n')[0].type, 'paragraph');
+  assert.equal(parseBlocks('[repo]:\n')[0].type, 'paragraph');
+  assert.equal(parseBlocks('[repo]: https://example.com\nmore\ntext\n')[0].type, 'linkDef');
+  assert.equal(parseBlocks('[repo]: https://example.com\nmore\ntext\n')[1].type, 'paragraph');
+});
+
+test('does not parse definitions nested in a list, quote or indented code', () => {
+  assert.equal(parseBlocks('- [^a]: x\n')[0].type, 'list');
+  assert.equal(parseBlocks('> [^a]: x\n')[0].type, 'quote');
+  const indented = parseBlocks('\n    [^a]: x\n');
+  assert.deepEqual(indented.map(({ type }) => type), ['blank', 'code', 'blank']);
+});

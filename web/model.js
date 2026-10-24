@@ -18,6 +18,10 @@ const QUOTE_RE = /^( {0,3})(>[ \t]?)(.*)$/;
 const HR_RE = /^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/;
 const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
 const HTML_OPEN_RE = /^ {0,3}<([A-Za-z][\w:-]*)(?:\s[^>]*)?>/;
+// Cross-block definitions are top-level only: ` {0,3}` indent cap keeps list and
+// indented-code continuations out of the definition namespace.
+const FOOTNOTE_DEF_RE = /^ {0,3}\[\^([^\]\s]{1,64})\]:[ \t]*(.*)$/;
+const LINK_DEF_RE = /^ {0,3}\[([^^\]\s][^\]\s]{0,63})\]:[ \t]*(\S+)(?:[ \t]+"([^"]*)")?$/;
 const HTML_BLOCK_TAGS = new Set(['address','article','aside','blockquote','details','dialog','dd','div','dl','dt','fieldset','figcaption','figure','footer','form','h1','h2','h3','h4','h5','h6','header','hr','li','main','nav','ol','p','pre','section','summary','table','tbody','td','tfoot','th','thead','tr','ul','script','style','template']);
 const HTML_VOID_TAGS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
 
@@ -41,6 +45,8 @@ export function classify(raw) {
   }
   const fence=FENCE_RE.exec(first); if (fence) return {type:'code',prefix:fence[1],fence:fence[1][0],fenceLength:fence[1].length,info:fence[2].trim()||undefined};
   if (/^ {0,3}(?:\$\$|\\\[)/.test(first)) return {type:'math',delimiter:first.match(/^ {0,3}(\$\$|\\\[)/)[1]};
+  const footnote=FOOTNOTE_DEF_RE.exec(first); if (footnote) return {type:'footnoteDef',label:footnote[1],body:footnote[2]};
+  const linkDef=LINK_DEF_RE.exec(first); if (linkDef) return {type:'linkDef',label:linkDef[1],url:linkDef[2],title:linkDef[3]};
   if (HR_RE.test(first)) return {type:'hr'};
   const heading=HEADING_RE.exec(first); if (heading) return {type:'heading',level:heading[2].length,prefix:heading[2]};
   const list=classifyList(first); if (list) return list;
@@ -51,7 +57,7 @@ export function classify(raw) {
 function isFenceClose(line, open) { const m=/^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line); return Boolean(m && m[1][0]===open[0] && m[1].length>=open.length); }
 function isMathClose(line, opening) { return opening==='$$' ? /^ {0,3}\$\$\s*$/.test(line) : /^ {0,3}\\\]\s*$/.test(line); }
 function hasInlineMathClose(line, opening) { const start=line.search(opening==='$$' ? /\$\$/ : /\\\[/); const close=opening==='$$' ? line.indexOf('$$',start+2) : line.indexOf('\\]',start+2); return start>=0 && close>=0 && /^\s*$/.test(line.slice(close+2)); }
-function isSpecialLine(line, lines, index) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
+function isSpecialLine(line, lines, index) { return Boolean(FENCE_RE.test(line)||/^ {0,3}(?:\$\$|\\\[)/.test(line)||FOOTNOTE_DEF_RE.test(line)||LINK_DEF_RE.test(line)||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
 function nextId(used,serial) { let id; do id=`block-${serial.value++}`; while(used.has(id)); used.add(id); return id; }
 
 export function parseBlocks(text, previous=[]) {
