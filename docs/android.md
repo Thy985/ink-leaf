@@ -60,6 +60,8 @@ window.InkLeafAndroid.postMessage(JSON.stringify({
 
 v0.4 的代码高亮、Setext 标题、缩进代码块和裸 URL 链接由共享 `web/` 渲染器提供，Android 侧只同步资源，不改变原生文件桥；真机输入法与文件提供方验证要求不变。
 
+v0.5 的脚注与链接引用定义同样只落在共享 `web/` 模型与渲染器里：解析、编号与锚点跳转都在网页层完成，Android 侧不需要新的权限、文件桥或原生代码；真机验证要求不变。
+
 当前环境已安装 SDK，`assembleDebug` 和 `lintDebug` 已通过。未连接 Android 真机或模拟器，尚未验证安装、原生系统选择器或真实输入法。浏览器视口缩小和合成组合输入只能验证网页事件契约，不能代替 Android 真机。
 
 进入下一阶段前需在设备上测试：
