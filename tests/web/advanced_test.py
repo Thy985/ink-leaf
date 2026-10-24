@@ -70,9 +70,9 @@ with sync_playwright() as p:
  assert page.locator('.list').nth(1).evaluate('(e)=>getComputedStyle(e).marginLeft')=='22px'
  page.locator('.task-box').click();assert md().endswith('- [ ] nested task')
  ok('混合嵌套列表缩进与嵌套任务勾选')
- load('    - [ ] compute $x^2$');blur()
+ load('- parent\n    - [ ] compute $x^2$');blur()
  assert page.locator('.block-preview .katex').count()==1
- page.locator('.task-box').click();assert md()=='    - [x] compute $x^2$'
+ page.locator('.task-box').click();assert md()=='- parent\n    - [x] compute $x^2$'
  ok('深层任务列表中的公式和勾选可混用')
  load('- parent\n- child');caret(1);page.keyboard.press('Tab');assert md()=='- parent\n  - child',repr(md())
  page.keyboard.press('Enter');page.keyboard.type('next');assert md().endswith('\n  - next')

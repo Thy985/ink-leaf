@@ -204,3 +204,25 @@ test('treats --- after a paragraph as setext but blank-preceded --- as hr', () =
   assert.equal(blocks[4].type, 'hr');
   assert.equal(serialize(blocks), 'alpha\n---\n\nbeta\n\n---');
 });
+
+test('parses top-level indented code blocks and preserves trailing blanks', () => {
+  const source = '    first\n    second\n\nafter';
+  const blocks = parseBlocks(source);
+  assert.equal(blocks[0].type, 'code');
+  assert.equal(blocks[0].style, 'indented');
+  assert.equal(blocks[0].raw, '    first\n    second');
+  assert.equal(blocks[1].type, 'blank');
+  assert.equal(blocks[2].type, 'paragraph');
+  assert.equal(serialize(blocks), source);
+});
+
+test('treats a top-level four-space list marker as code', () => {
+  const blocks = parseBlocks('    - item');
+  assert.equal(blocks[0].type, 'code');
+  assert.equal(blocks[0].style, 'indented');
+});
+
+test('does not treat list continuation indentation as indented code', () => {
+  const blocks = parseBlocks('- parent\n    - child');
+  assert.deepEqual(blocks.map(({ type }) => type), ['list', 'list']);
+});

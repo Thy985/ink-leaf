@@ -253,6 +253,17 @@ with sync_playwright() as playwright:
         cases.append("含实体的 Setext 走富块路径")
         print("PASS", cases[-1], flush=True)
 
+        # --- indented code ---
+        raw = "    const x = 1;\n    const y = 2;\n"
+        load(page, raw)
+        blur(page)
+        assert page.locator("#editor .code .block-preview pre").inner_text().strip().startswith("const x = 1;")
+        page.locator("#editor .code .block-preview").click()
+        assert page.locator("#editor .code .block-source").is_visible()
+        assert markdown(page) == raw
+        cases.append("缩进代码块预览、编辑与 round-trip")
+        print("PASS", cases[-1], flush=True)
+
         page.set_viewport_size({"width": 393, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         page.locator("#theme-toggle").click()

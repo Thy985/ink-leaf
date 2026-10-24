@@ -6,6 +6,11 @@ function setextLevel(line) {
   const match = SETEXT_RE.exec(line);
   return match ? (match[1][0] === '=' ? 1 : 2) : 0;
 }
+const INDENTED_CODE_RE = /^(?: {4}|\t)/;
+
+function isIndentedCodeStart(lines, index) {
+  return INDENTED_CODE_RE.test(lines[index]) && (index === 0 || /^\s*$/.test(lines[index - 1]));
+}
 const HEADING_RE = /^( {0,3})(#{1,6})(?:[ \t]+(.*)|[ \t]*)$/;
 // Up to 3 spaces is CommonMark's top-level allowance; nested items may use any indentation.
 const LIST_RE = /^([ \t]*)(?:(\d+)([.)])|([-+*]))[ \t]+(.*)$/;
@@ -53,6 +58,16 @@ export function parseBlocks(text, previous=[]) {
   const source=String(text??'').replaceAll('\r\n','\n').replaceAll('\r','\n'), lines=source.split('\n'), parsed=[]; let i=0;
   while(i<lines.length) {
     const line=lines[i]; if (/^\s*$/.test(line)) { parsed.push({type:'blank',raw:line}); i++; continue; }
+    if (isIndentedCodeStart(lines, i)) {
+      const start = i;
+      let end = i;
+      while (end < lines.length && (/^\s*$/.test(lines[end]) || INDENTED_CODE_RE.test(lines[end]))) end++;
+      let rawEnd = end;
+      while (rawEnd > start && /^\s*$/.test(lines[rawEnd - 1])) rawEnd--;
+      parsed.push({ type: 'code', style: 'indented', raw: lines.slice(start, rawEnd).join('\n') });
+      i = rawEnd;
+      continue;
+    }
     const opening=FENCE_RE.exec(line); if(opening){const start=i++; while(i<lines.length&&!isFenceClose(lines[i],opening[1]))i++; if(i<lines.length)i++; parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
     const mathOpen=/^ {0,3}(\$\$|\\\[)/.exec(line); if(mathOpen){const start=i++, delim=mathOpen[1]; if(!hasInlineMathClose(line,delim)){ while(i<lines.length&&!isMathClose(lines[i],delim))i++; if(i<lines.length)i++; } parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
     if(classifyHtml(line)){ const start=i++, htmlInfo=classifyHtml(line), tag=htmlInfo.tag; const close=new RegExp(`</${tag}\\s*>`,'i'); const selfClosing=/\/\s*>\s*$/.test(line)||HTML_VOID_TAGS.has(tag); if(!selfClosing&&!close.test(line)){ while(i<lines.length&&!close.test(lines[i])&&(tag==='script'||tag==='style'||!/^\s*$/.test(lines[i])))i++; if(i<lines.length&&close.test(lines[i]))i++; } parsed.push({...htmlInfo,raw:lines.slice(start,i).join('\n')}); continue; }
