@@ -155,7 +155,7 @@ function startsUrl(text, pos) {
   return /^(?:https?:\/\/|mailto:)/i.test(text.slice(pos));
 }
 
-export function renderInline(raw){
+export function renderInline(raw, doc = null){
   const input=String(raw??'');
   const render=(text,allowCode=true,allowLinks=true)=>{let out='',pos=0;
     while(pos<text.length){
@@ -171,6 +171,25 @@ export function renderInline(raw){
         }
       }
       if(text[pos]==='\\' && pos+1<text.length && /[\\`*_[\]~<>()[\]{}#+.!|_-]/.test(text[pos+1])) { out+=syntax('\\')+escape(text[pos+1]); pos+=2; continue; }
+      if (doc && text[pos] === '[' && text[pos + 1] === '^') {
+        const ref = text.slice(pos).match(/^\[\^([^\]\s]{1,64})\]/);
+        const entry = ref ? doc.footnotes.get(normalizeLabel(ref[1])) : null;
+        if (entry && entry.number) {
+          out += syntax(ref[0]) + `<sup><a href="#ink-fn-${entry.number}">${entry.number}</a></sup>`;
+          pos += ref[0].length;
+          continue;
+        }
+      }
+      if (doc && text[pos] === '[') {
+        const ref = text.slice(pos).match(/^\[([^\]\n]+)\]\[([^\]\s]{1,64})\]/);
+        const entry = ref ? doc.links.get(normalizeLabel(ref[2])) : null;
+        if (entry) {
+          const labelHtml = render(ref[1], allowCode, false);
+          out += syntax('[') + (isSafeLinkTarget(entry.url) ? `<a href="${escape(entry.url)}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>` : labelHtml) + syntax(`][${ref[2]}]`);
+          pos += ref[0].length;
+          continue;
+        }
+      }
       if(allowCode&&text[pos]==='`'){let n=1;while(text[pos+n]==='`')n++;const marker='`'.repeat(n), end=text.indexOf(marker,pos+n);if(end!==-1){let content=text.slice(pos+n,end), padded=content.startsWith(' ')&&content.endsWith(' ')&&content.trim();if(padded)content=content.slice(1,-1);out+=syntax(marker)+(padded?' ':'')+`<code>${escape(content)}</code>`+(padded?' ':'')+syntax(marker);pos=end+n;continue;}}
       const link=text.slice(pos).match(/^\[([^\]\n]+)\]\(([^)\s]+)\)/);if(link){const[,label,url]=link, labelHtml=render(label,allowCode,false), suffix=`](${url})`;out+=syntax('[')+(isSafeLinkTarget(url)?`<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${labelHtml}</a>`:labelHtml)+syntax(suffix);pos+=link[0].length;continue;}
       const strong=text.slice(pos).match(/^(\*\*|__)(?=\S)([\s\S]+?)\1/);if(strong){out+=syntax(strong[1])+`<strong>${render(strong[2],false,allowLinks)}</strong>`+syntax(strong[1]);pos+=strong[0].length;continue;}

@@ -364,3 +364,47 @@ test('collects link reference definitions with their optional title', () => {
   assert.equal(ctx.links.get('repo').title, 'Repo title');
   assert.equal(ctx.links.get('docs').title, undefined);
 });
+
+test('renders a footnote reference as a numbered anchor and keeps the source in a syntax span', () => {
+  const blocks = parseBlocks('See [^note] here\n\n[^note]: Body\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.match(html, /<sup><a href="#ink-fn-1">1<\/a><\/sup>/);
+  assert.ok(html.includes('<span class="syntax">[^note]<\/span>'));
+  assert.equal(blocks[0].raw, 'See [^note] here');
+});
+
+test('repeated references to one footnote reuse its number', () => {
+  const blocks = parseBlocks('[^a] again [^a]\n\n[^a]: Body\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.equal((html.match(/href="#ink-fn-1"/g) || []).length, 2);
+  assert.ok(!html.includes('#ink-fn-2'));
+});
+
+test('leaves unpaired, escaped and empty footnote references as plain text', () => {
+  const blocks = parseBlocks('Undef [^nope], escaped \\[^a], and [^a] real\n\n[^a]: Body\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.equal((html.match(/<sup>/g) || []).length, 1);
+  assert.ok(html.includes('[^nope]'));
+  assert.ok(!html.includes('<a href="#ink-fn-2'));
+});
+
+test('resolves link references through the document context', () => {
+  const blocks = parseBlocks('Read [the repo][repo] now\n\n[repo]: https://example.com "Repo title"\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.match(html, /<a href="https:\/\/example\.com" target="_blank" rel="noopener noreferrer">the repo<\/a>/);
+  assert.ok(html.includes('<span class="syntax">][repo]<\/span>'));
+  assert.equal(html.replace(/<\/?(?:span|a|sup)\b[^>]*>/g, ''), 'Read [the repo][repo] now');
+});
+
+test('does not turn a link reference into an anchor when the target is unsafe or undefined', () => {
+  const blocks = parseBlocks('Bad [x][evil] and missing [y][gone]\n\n[evil]: javascript:alert(1)\n');
+  const html = renderInline(blocks[0].raw, buildDocContext(blocks));
+  assert.ok(!html.includes('<a href="javascript:'));
+  assert.equal((html.match(/<a /g) || []).length, 0);
+  assert.equal(html.replace(/<\/?span\b[^>]*>/g, ''), 'Bad [x][evil] and missing [y][gone]');
+});
+
+test('renders nothing new when no document context is supplied', () => {
+  assert.equal(renderInline('See [^a] and [x][repo]'), renderInline('See [^a] and [x][repo]', null));
+  assert.ok(!renderInline('[^a]').includes('<sup>'));
+});
