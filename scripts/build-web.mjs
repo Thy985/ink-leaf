@@ -34,7 +34,7 @@ async function notice(name) {
   for (const file of files) notices.push(`\n--- ${file} ---\n${await readFile(path.join(dir, file), 'utf8')}`);
   for (const dependency of Object.keys(pkg.dependencies || {}).sort()) await notice(dependency);
 }
-for (const name of ['markdown-it', 'dompurify', 'katex']) await notice(name);
+for (const name of ['markdown-it', 'dompurify', 'katex', 'highlight.js']) await notice(name);
 notices.push('\n===== Babel regenerator helpers embedded in DOMPurify (MIT) =====\n');
 notices.push(await readFile(path.join(root, 'licenses/babel-helpers-MIT.txt'), 'utf8'));
 await writeFile(path.join(vendor, 'licenses.txt'), notices.join('\n') + '\n');

@@ -69,3 +69,20 @@ button:disabled{opacity:.35;cursor:default}button:disabled:hover{background:none
 
 .touch-indent{display:none}
 @media(pointer:coarse),(max-width:640px){.touch-indent{display:flex}}
+#editor .code.rich-block:not(.active){padding:0;background:none;border:0}
+#editor .block-preview pre{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:13px;line-height:1.8;white-space:pre;overflow-x:auto;background:#f1f3ec;border:1px solid #e3e8da;border-radius:6px;padding:16px 20px;margin:10px 0;color:#506246;tab-size:2}
+#editor .block-preview pre code{font:inherit;background:none;padding:0;color:inherit}
+#editor .code.rich-block.active>.block-source{white-space:pre;overflow-x:auto;padding:16px 20px;font-size:13px;line-height:1.8}
+#editor .hljs-keyword,#editor .hljs-built_in{color:#7a5d8f}
+#editor .hljs-string,#editor .hljs-literal{color:#5f7a45}
+#editor .hljs-comment{color:#9aa08f;font-style:italic}
+#editor .hljs-number{color:#a05f3c}
+#editor .hljs-title,#editor .hljs-function{color:#4a6b7a}
+#editor .hljs-attr,#editor .hljs-variable{color:#8a6b3f}
+html[data-theme="dark"] #editor .block-preview pre{background:#1f251e;border-color:#3b4933;color:#becfb1}
+html[data-theme="dark"] #editor .hljs-keyword,html[data-theme="dark"] #editor .hljs-built_in{color:#c7a9dd}
+html[data-theme="dark"] #editor .hljs-string,html[data-theme="dark"] #editor .hljs-literal{color:#a9c98a}
+html[data-theme="dark"] #editor .hljs-comment{color:#7c8974}
+html[data-theme="dark"] #editor .hljs-number{color:#d9a07a}
+html[data-theme="dark"] #editor .hljs-title,html[data-theme="dark"] #editor .hljs-function{color:#9cc4d4}
+html[data-theme="dark"] #editor .hljs-attr,html[data-theme="dark"] #editor .hljs-variable{color:#d6bd8a}

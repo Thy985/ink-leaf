@@ -120,16 +120,8 @@ function decorate(block) {
     }
     if (block.type === 'heading') previewRaw = raw.replace(/^ {0,3}#{1,6}[ \t]+/, '');
     if (block.type === 'quote') previewRaw = raw.replace(/^ {0,3}>[ \t]?/gm, '');
-    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type)}</div>`;
-  }
-  if (block.type === 'code') {
-    const lines = raw.split('\n');
-    const first = lines.shift();
-    const fence = first.trim().match(/^(`{3,}|~{3,})/);
-    const last = lines[lines.length - 1];
-    const closed = fence && last && new RegExp('^ {0,3}' + fence[1][0] + '{' + fence[1].length + ',}\\s*$').test(last);
-    const tail = closed ? lines.pop() : null;
-    return `<span class="syntax fence">${esc(first)}\n</span>${esc(lines.join('\n'))}${tail !== null ? `<span class="syntax fence">\n${esc(tail)}</span>` : ''}`;
+    const highlight = !(block.type === 'code' && block.id === activeId);
+    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${previewMarkdown(previewRaw, block.type, { highlight })}</div>`;
   }
   let prefix = '';
   if (block.type === 'heading') prefix = raw.match(/^ {0,3}#{1,6}(?:[ \t]+|$)/)?.[0] || '';
@@ -154,6 +146,7 @@ function render(sel = null) {
     if (node._key !== key) {
       node.innerHTML = block.raw ? decorate(block) : '<br>';
       node._key = key;
+      node._stale = block.type === 'code' && block.id === activeId;
     }
     node.className = `block ${block.type}${needsPreview(block) ? ' rich-block' : ''}${block.id === activeId ? ' active' : ''}`;
     const indent = block.raw.match(/^[ \t]*/)[0].replaceAll('\t', '    ').length;
@@ -171,9 +164,23 @@ function render(sel = null) {
   updateUI();
   if (sel) restore(sel);
 }
+let lastActiveId = null;
+
+function refreshCodePreview(id) {
+  const node = [...editor.children].find((candidate) => candidate.dataset.id === id);
+  const block = blocks.find((candidate) => candidate.id === id);
+  if (!node || !block || block.type !== 'code' || !node._stale) return;
+  node.innerHTML = decorate(block);
+  node._key = block.type + ':' + block.raw;
+  node._stale = false;
+}
+
 function updateActive() {
+  const previous = lastActiveId;
   [...editor.children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
   [...$('outline').children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
+  if (previous && previous !== activeId) refreshCodePreview(previous);
+  lastActiveId = activeId;
 }
 function updateUI() {
   const value = text();
@@ -471,7 +478,7 @@ $('source-toggle').onclick = () => {
   $('source-toggle').textContent = sourceMode ? '返回编辑' : '源文';
   $('source-toggle').setAttribute('aria-pressed', String(sourceMode));
   if (sourceMode) { source.value = text(); resizeSource(); restore(sel); }
-  else render(sel);
+  else { activeId = null; render(sel); }
 };
 source.addEventListener('input', () => {
   if (composing) return;

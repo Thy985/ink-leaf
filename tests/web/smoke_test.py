@@ -46,7 +46,7 @@ with sync_playwright() as p:
     load(original)
     assert page.locator('#editor .heading').count() == 1
     assert page.locator('#editor strong').inner_text() == '粗体'
-    assert page.locator('#editor .code').inner_text().strip() == 'const x=1;'
+    assert page.locator('#editor .code .block-preview').inner_text().strip() == 'const x=1;'
     assert markdown() == original
     ok('Markdown 打开与基础富文本渲染')
 

@@ -1,6 +1,7 @@
 import MarkdownIt from 'markdown-it';
 import DOMPurify from 'dompurify';
 import katex from 'katex';
+import hljs from 'highlight.js/lib/common';
 
 const md = new MarkdownIt({ html: true, linkify: false, typographer: false, breaks: false });
 md.inline.ruler.before('escape', 'ink_math', (state, silent) => {
@@ -27,9 +28,47 @@ for (const name of ['th_open', 'td_open']) md.renderer.rules[name] = (tokens, in
   return self.renderToken(tokens, index, options);
 };
 
-export function previewMarkdown(raw, type = 'paragraph') {
+const MAX_HIGHLIGHT_CHARS = 100_000;
+
+function plainFence(content) {
+  return `<pre><code>${md.utils.escapeHtml(content)}</code></pre>\n`;
+}
+
+function sanitizeHighlight(value) {
+  const clean = DOMPurify.sanitize(value, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
+  return clean.replace(/class="([^"]*)"/g, (_, classes) => {
+    const kept = classes.split(/\s+/).filter((name) => name === 'hljs' || name.startsWith('hljs-'));
+    return kept.length ? ` class="${kept.join(' ')}"` : '';
+  });
+}
+
+md.renderer.rules.fence = (tokens, index, options, env) => {
+  const token = tokens[index];
+  const info = token.info.trim().split(/\s+/)[0] || '';
+  if (!env?.inkHighlight || !info || token.content.length > MAX_HIGHLIGHT_CHARS || !hljs.getLanguage(info)) {
+    return plainFence(token.content);
+  }
+  let fragment;
+  try {
+    fragment = sanitizeHighlight(hljs.highlight(token.content, { language: info, ignoreIllegals: true }).value);
+  } catch {
+    return plainFence(token.content);
+  }
+  const id = env.inkCodeFragments.length;
+  env.inkCodeFragments.push(fragment);
+  return `<pre><code>${env.inkCodeSeed}${id}END</code></pre>\n`;
+};
+
+export function previewMarkdown(raw, type = 'paragraph', options = {}) {
   const formulas = [];
+  const codeFragments = [];
   const seed = `INKMATH${crypto.randomUUID().replaceAll('-', '')}TOKEN`;
+  const codeSeed = `INKCODE${crypto.randomUUID().replaceAll('-', '')}TOKEN`;
+  const env = {
+    inkHighlight: options.highlight !== false,
+    inkCodeFragments: codeFragments,
+    inkCodeSeed: codeSeed,
+  };
   const formula = (src, display) => {
     const key = `${seed}${formulas.length}END`;
     try {
@@ -46,7 +85,7 @@ export function previewMarkdown(raw, type = 'paragraph') {
     const body = trimmed.startsWith('$$') ? trimmed.slice(2).replace(/\$\$\s*$/, '') : trimmed.slice(2).replace(/\\\]\s*$/, '');
     html = formula(body.trim(), true);
   } else if (type === 'hr') html = '<hr>';
-  else html = md.render(raw);
+  else html = md.render(raw, env);
   // Untrusted HTML never retains CSS, identifiers, interactive controls, media or embeds.
   let clean = DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
@@ -56,10 +95,11 @@ export function previewMarkdown(raw, type = 'paragraph') {
     ADD_URI_SAFE_ATTR: ['align', 'colspan', 'rowspan', 'title'],
     ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#[^\s]*$)/i,
   });
-  formulas.forEach((value, i) => { clean = clean.replaceAll(`${seed}${i}END`, value); });
+  formulas.forEach((value, index) => { clean = clean.replaceAll(`${seed}${index}END`, value); });
+  codeFragments.forEach((value, index) => { clean = clean.replaceAll(`${codeSeed}${index}END`, value); });
   return clean || '<span class="safe-empty">此 HTML 的不安全内容已隐藏，点击可编辑原文。</span>';
 }
 
 export function needsPreview(block) {
-  return ['table','hr','math','html'].includes(block.type) || (block.type !== 'code' && /(?:\$[^$\n]+\$|\\\(|<\/?[a-zA-Z!]|&(?:#\d+|#x[\da-f]+|[a-z]+);|\\[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/.test(block.raw));
+  return block.type === 'code' || ['table','hr','math','html'].includes(block.type) || (block.type !== 'code' && /(?:\$[^$\n]+\$|\\\(|<\/?[a-zA-Z!]|&(?:#\d+|#x[\da-f]+|[a-z]+);|\\[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/.test(block.raw));
 }
