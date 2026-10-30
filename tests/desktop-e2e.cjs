@@ -35,6 +35,7 @@ async function waitFile(p,ms=10000){const t0=Date.now();while(Date.now()-t0<ms){
  async function open(p,discard=true){await queue('open',{canceled:false,filePaths:[p]});if(discard && await page.locator('#dirty').textContent())await queue('message',1);await cmd('open');}
  async function saveAs(p){await queue('save',{canceled:false,filePath:p});await cmd('saveAs');}
  async function assertMD(s){await page.waitForFunction(s=>window.inkstone.getMarkdown()===s,s);assert.equal(await md(),s);}
+ async function pasteImages(specs){await page.evaluate((specs)=>{const dt=new DataTransfer();for(const s of specs){let arr;if(s.b64){const bin=atob(s.b64);arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);}else arr=new Uint8Array(s.zeros);dt.items.add(new File([arr],'shot.png',{type:'image/png'}));}const ev=new ClipboardEvent('paste',{bubbles:true,cancelable:true});Object.defineProperty(ev,'clipboardData',{value:dt});document.getElementById('editor').dispatchEvent(ev);},specs);}
  try{
   await launch();
   assert((await md()).includes('Windows v0.7'));
@@ -125,6 +126,32 @@ async function waitFile(p,ms=10000){const t0=Date.now();while(Date.now()-t0<ms){
   const pdfBytes = await fs.readFile(exportedPdf);
   assert.equal(pdfBytes.subarray(0, 5).toString('latin1'), '%PDF-');
   ok('菜单导出 PDF 生成公式内嵌的离线 PDF');
+  // v0.8: a multi-image paste writes every file and inserts them as one undoable step.
+  await edit('# 多图\n\n段落\n');await page.locator('#source-toggle').click();await page.locator('#editor > *').first().click();
+  await pasteImages([{b64:png.toString('base64')},{b64:png.toString('base64')}]);
+  await page.waitForFunction(()=>(window.inkstone.getMarkdown().match(/!\[粘贴图片\]\(粘贴图片-\d{8}-\d{6}(-\d+)?\.png\)/g)||[]).length===2);
+  const shots=(await fs.readdir(fixtures)).filter((n)=>/^粘贴图片-\d{8}-\d{6}(-\d+)?\.png$/.test(n));
+  assert.equal(shots.length,3,'two more images written beside the document');
+  await page.locator('#status').click();
+  await page.waitForSelector('#editor .ink-image-ready img');
+  assert.equal(await page.locator('#editor .ink-image-ready img').count(),2);
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(()=>!window.inkstone.getMarkdown().includes('![粘贴图片]('));
+  ok('多图一次粘贴全部落盘并整体撤销');
+  // v0.8: paste failure paths keep the document intact and explain themselves.
+  await queue('message',1);await cmd('new');await page.locator('#editor > *').first().click();
+  await pasteImages([{b64:png.toString('base64')}]);
+  await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('请先保存文档'));
+  await assertMD('');
+  ok('未保存文档时粘贴图片被拦截并提示');
+  await open(first);await page.locator('#editor > *').first().click();
+  await pasteImages([{zeros:5*1024*1024+1}]);
+  await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('图片超过 5 MB'));
+  await assertMD('# 修改后\n本地内容\n');
+  await pasteImages([{b64:Buffer.from([1,2,3,4]).toString('base64')}]);
+  await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('图片内容与类型不一致'));
+  await assertMD('# 修改后\n本地内容\n');
+  ok('超大与伪装图片粘贴给出明确拒绝文案');
   await edit('<div onclick="window.BAD=1"><script>window.BAD=1</script><iframe src="https://bad.invalid"></iframe><a href="javascript:alert(1)">bad</a><p>safe</p></div>');await page.locator('#source-toggle').click();await page.locator('#status').click();
   assert.equal(await page.evaluate(()=>Boolean(window.BAD)),false);assert.equal(await page.locator('.block-preview script,.block-preview iframe,.block-preview [onclick]').count(),0);ok('HTML 脚本、事件、嵌入与危险链接过滤');
   await edit('alpha alpha');await cmd('find');await page.locator('#find-input').fill('alpha');assert.equal(await page.locator('#find-count').textContent(),'1 / 2');await page.locator('#replace-input').fill('beta');await page.locator('#replace-all').click();await assertMD('beta beta');await page.locator('#find-close').click();await cmd('undo');await assertMD('alpha alpha');await cmd('redo');await assertMD('beta beta');ok('原生菜单查找替换、撤销与重做');

@@ -635,6 +635,7 @@ async function insertImages(files) {
   imageBusy = true;
   try {
     const at = range();
+    if (!at) { toast('请先把光标放进编辑器，再插入图片'); return; }
     const refs = [];
     const failures = [];
     let singleName = null;

@@ -18,7 +18,8 @@ const PASTE_IMAGE_MIME = /^image\/(png|jpeg|gif|webp|bmp|avif)$/;
 // rejected before it ever reaches the main process.
 function validImageBytes(value) {
   const view = value instanceof ArrayBuffer ? new Uint8Array(value) : (ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : null);
-  if (!view || !view.byteLength || view.byteLength > 5 * 1024 * 1024) throw new Error('无效的图片数据');
+  if (!view || !view.byteLength) throw new Error('无效的图片数据');
+  if (view.byteLength > 5 * 1024 * 1024) throw new Error('图片超过 5 MB 限制');
   return view;
 }
 function validImageMime(value) {
