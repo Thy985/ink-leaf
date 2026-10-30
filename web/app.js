@@ -933,9 +933,13 @@ details{background:#2b3328;border-color:#3a4336}summary{color:#afc69f}
 }`;
 
 // PDF-only additions on top of EXPORT_CSS: page margins and pagination guards so
-// code blocks, quotes and tables are not sliced across printed pages.
+// code blocks, quotes and table rows are not sliced across printed pages. Tables
+// protect rows instead of the whole element — a table taller than one page must
+// split, with the header repeating and no row cut mid-line.
 const PRINT_CSS = `@page{margin:18mm 16mm}
-pre,blockquote,details,table,.footnote-def,.ink-image,.ink-image-ready{break-inside:avoid;page-break-inside:avoid}
+body{padding-bottom:0}
+pre,blockquote,details,tr,.footnote-def,.ink-image,.ink-image-ready{break-inside:avoid;page-break-inside:avoid}
+thead{display:table-header-group}
 h1,h2,h3,h4,h5,h6{break-after:avoid;page-break-after:avoid}`;
 
 function exportImage(url, box) {

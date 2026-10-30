@@ -3,6 +3,7 @@ const {_electron: electron} = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const zlib = require('node:zlib');
 const assert = require('node:assert/strict');
 const ROOT=path.resolve(__dirname,'..');
 const OUT=path.join(ROOT,'test-results');
@@ -10,6 +11,10 @@ const cases=[];
 const ok=(s)=>{cases.push(s);console.log('PASS',s);};
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function waitFile(p,ms=10000){const t0=Date.now();while(Date.now()-t0<ms){try{const s=await fs.stat(p);if(s.size>0)return s;}catch{}await delay(150);}throw new Error('file not written: '+p);}
+function crc32(buf){let t=crc32.t;if(!t){t=crc32.t=new Int32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;t[n]=c;}}let c=-1;for(let i=0;i<buf.length;i++)c=t[(c^buf[i])&0xff]^(c>>>8);return(c^-1)>>>0;}
+function pngChunk(type,data){const len=Buffer.alloc(4);len.writeUInt32BE(data.length);const body=Buffer.concat([Buffer.from(type,'latin1'),data]);const crc=Buffer.alloc(4);crc.writeUInt32BE(crc32(body));return Buffer.concat([len,body,crc]);}
+// A random-noise PNG that DEFLATE cannot shrink, so embedded-image size assertions stay meaningful.
+function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(width,0);ihdr.writeUInt32BE(height,4);ihdr[8]=8;ihdr[9]=2;const raw=[];const row=Buffer.alloc(1+width*3);for(let y=0;y<height;y++){for(let x=0;x<width*3;x++)row[1+x]=(Math.random()*256)|0;raw.push(Buffer.from(row));}return Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),pngChunk('IHDR',ihdr),pngChunk('IDAT',zlib.deflateSync(Buffer.concat(raw))),pngChunk('IEND',Buffer.alloc(0))]);}
 (async()=>{
  await fs.mkdir(OUT,{recursive:true});
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'inkstone-e2e-'));
@@ -152,6 +157,54 @@ async function waitFile(p,ms=10000){const t0=Date.now();while(Date.now()-t0<ms){
   await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('图片内容与类型不一致'));
   await assertMD('# 修改后\n本地内容\n');
   ok('超大与伪装图片粘贴给出明确拒绝文案');
+  // v0.8: exports embed local images even when the editor never loaded them (C1) —
+  // the image failed at open time, the file is added afterwards, and the export
+  // reads it through the bridge without touching the editor's failed cards.
+  const missingDoc='# 缺图\n\n![后补](后补.png)\n\n![幽灵](ghost.png)\n';
+  const missingPath=path.join(fixtures,'缺图.md');await fs.writeFile(missingPath,missingDoc);
+  await open(missingPath);
+  await page.waitForSelector('#editor .ink-image[data-ink-state="error"]');
+  assert.equal(await page.locator('#editor .ink-image[data-ink-state="error"]').count(),2);
+  await fs.writeFile(path.join(fixtures,'后补.png'),noisePng(400,400));
+  const missingHtmlPath=path.join(fixtures,'缺图导出.html');
+  await queue('save',{canceled:false,filePath:missingHtmlPath});
+  await cmd('exportHtml');
+  await waitFile(missingHtmlPath);
+  const missingHtml=await fs.readFile(missingHtmlPath,'utf8');
+  assert(/data:image\/png;base64,[A-Za-z0-9+/=]{400000}/.test(missingHtml),'repaired local image embeds automatically at full size');
+  assert(missingHtml.includes('ink-export-missing')&&missingHtml.includes('ghost.png'),'still-missing images keep a named placeholder');
+  assert.equal(await page.locator('#editor .ink-image[data-ink-state="error"]').count(),2,'export does not touch editor card states');
+  const missingPdfPath=path.join(fixtures,'缺图导出.pdf');
+  await queue('save',{canceled:false,filePath:missingPdfPath});
+  await cmd('exportPdf');
+  await waitFile(missingPdfPath);
+  const missingPdf=await fs.readFile(missingPdfPath);
+  assert.equal(missingPdf.subarray(0,5).toString('latin1'),'%PDF-');
+  assert(missingPdf.length>100000,'PDF carries the embedded image, far above a text-only baseline');
+  ok('导出自动内嵌未加载的本地图片，编辑器状态不受影响');
+  // v0.8: a long document (C3) exports to a multi-page PDF kept under test-results for
+  // manual pagination review; the status line shows progress (C2) and the toast (C4)
+  // carries the full output path.
+  const longQuote='> '+'这是一段很长的引用文字，用来检查引用块在分页时不会被拦腰截断。'.repeat(30)+'\n';
+  let longTable='| 列一 | 列二 | 列三 |\n| :--- | :---: | ---: |\n';
+  for(let i=1;i<=60;i++)longTable+=`| 行 ${i} | 数据 ${(i*7)%100} | ${i%3===0?'**加粗**':'普通'} |\n`;
+  let longCode='```js\n';
+  for(let i=1;i<=300;i++)longCode+=`const step${i} = { index: ${i}, note: '第 ${i} 步的说明' };\n`;
+  longCode+='```\n';
+  const longDoc=`# 长文档排版样例\n\n${longQuote}\n${longTable}\n${longCode}\n结尾段落，确认文档完整收束。\n`;
+  const longPath=path.join(fixtures,'长文.md');await fs.writeFile(longPath,longDoc);
+  await open(longPath);
+  await fs.mkdir(path.join(OUT,'desktop'),{recursive:true});
+  const longPdfPath=path.join(OUT,'desktop','long-doc.pdf');
+  await queue('save',{canceled:false,filePath:longPdfPath});
+  await cmd('exportPdf');
+  assert((await page.locator('#status').textContent()).includes('正在导出'),'status shows progress while printing');
+  await waitFile(longPdfPath,60000);
+  const longPdf=await fs.readFile(longPdfPath);
+  assert.equal(longPdf.subarray(0,5).toString('latin1'),'%PDF-');
+  assert(longPdf.length>50000,'long document yields a substantial multi-page PDF');
+  await page.waitForFunction(()=>{const t=document.getElementById('toast').textContent;return t.includes('.pdf')&&(t.includes('\\')||t.includes('/'));});
+  ok('长文档导出多页 PDF，导出中显示进度，完成后提示完整路径');
   await edit('<div onclick="window.BAD=1"><script>window.BAD=1</script><iframe src="https://bad.invalid"></iframe><a href="javascript:alert(1)">bad</a><p>safe</p></div>');await page.locator('#source-toggle').click();await page.locator('#status').click();
   assert.equal(await page.evaluate(()=>Boolean(window.BAD)),false);assert.equal(await page.locator('.block-preview script,.block-preview iframe,.block-preview [onclick]').count(),0);ok('HTML 脚本、事件、嵌入与危险链接过滤');
   await edit('alpha alpha');await cmd('find');await page.locator('#find-input').fill('alpha');assert.equal(await page.locator('#find-count').textContent(),'1 / 2');await page.locator('#replace-input').fill('beta');await page.locator('#replace-all').click();await assertMD('beta beta');await page.locator('#find-close').click();await cmd('undo');await assertMD('alpha alpha');await cmd('redo');await assertMD('beta beta');ok('原生菜单查找替换、撤销与重做');
