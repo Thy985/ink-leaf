@@ -574,8 +574,8 @@ editor.addEventListener('compositionend', () => {
 editor.addEventListener('paste', (event) => {
   if (composing) return;
   event.preventDefault();
-  const image = pickClipboardImage(event.clipboardData);
-  if (image) { insertImage(image); return; }
+  const images = pickClipboardImages(event.clipboardData);
+  if (images.length) { insertImages(images); return; }
   const s = range();
   replace(s.start, s.end, event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n'));
 });
@@ -594,39 +594,73 @@ editor.addEventListener('dragover', (event) => {
 });
 editor.addEventListener('drop', (event) => {
   event.preventDefault();
-  const file = [...(event.dataTransfer?.files || [])].find((f) => PASTE_IMAGE_MIME.has(f.type));
-  if (file) { insertImage(file); return; }
+  const files = [...(event.dataTransfer?.files || [])].filter((f) => PASTE_IMAGE_MIME.has(f.type));
+  if (files.length) { insertImages(files); return; }
   toast('请用「打开」导入 Markdown，或粘贴纯文本。');
 });
+window.addEventListener('dragover', (event) => {
+  // Claim file drags outside the editor too, or the browser opens the file and replaces the page.
+  if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault();
+});
+window.addEventListener('drop', (event) => {
+  if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
+  if (event.defaultPrevented) return; // the editor handler already claimed this drop
+  event.preventDefault();
+  toast('请把图片拖到编辑器内插入，或用「打开」导入 Markdown。');
+});
 const PASTE_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp', 'image/avif']);
-function pickClipboardImage(data) {
+function pickClipboardImages(data) {
+  const files = [];
   for (const item of data?.items || []) {
-    if (item.kind === 'file' && PASTE_IMAGE_MIME.has(item.type)) { const file = item.getAsFile(); if (file) return file; }
+    if (item.kind === 'file' && PASTE_IMAGE_MIME.has(item.type)) { const file = item.getAsFile(); if (file) files.push(file); }
   }
-  return null;
+  return files;
+}
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取剪贴板图片失败'));
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(file);
+  });
 }
 // Desktop writes the bytes beside the saved document and inserts a relative path; the
 // web (and Android WebView) has no file-write access, so screenshots embed as data URLs.
-async function insertImage(file) {
+// Every image in a batch is inserted at the pre-insertion cursor; failures are skipped.
+let imageBusy = false;
+async function insertImages(files) {
   if (mobileBusy || desktopBusy) return;
-  if (desktop) {
-    if (!desktopPath) { toast('请先保存文档（Ctrl+S），再插入图片'); return; }
-    try {
-      const bytes = await file.arrayBuffer();
-      const result = await desktop.writeImage(file.type, bytes);
-      if (result?.ok) { const at = range(); replace(at.start, at.end, `![粘贴图片](${result.filename})`); toast(`已插入图片 ${result.filename}`); }
-      else if (result?.message) toast(result.message);
-    } catch (error) { toast(error?.message || '图片插入失败'); }
-    return;
-  }
-  if (file.size > 2 * 1024 * 1024) { toast('图片超过 2 MB，仅桌面版可插入本地图片文件'); return; }
-  const reader = new FileReader();
-  reader.onerror = () => toast('读取剪贴板图片失败');
-  reader.onload = () => {
-    try { const at = range(); replace(at.start, at.end, `![粘贴图片](${reader.result})`); toast('已插入内嵌图片'); }
-    catch (error) { toast(error?.message || '图片插入失败'); }
-  };
-  reader.readAsDataURL(file);
+  if (imageBusy) { toast('正在插入图片，请稍候'); return; }
+  if (!files.length) return;
+  imageBusy = true;
+  try {
+    const at = range();
+    const refs = [];
+    const failures = [];
+    let singleName = null;
+    if (desktop) {
+      if (!desktopPath) { toast('请先保存文档（Ctrl+S），再插入图片'); return; }
+      for (const file of files) {
+        try {
+          const bytes = await file.arrayBuffer();
+          const result = await desktop.writeImage(file.type, bytes);
+          if (result?.ok) { refs.push(`![粘贴图片](${result.filename})`); singleName = result.filename; }
+          else failures.push(result?.message || '图片插入失败');
+        } catch (error) { failures.push(error?.message || '图片插入失败'); }
+      }
+    } else {
+      for (const file of files) {
+        if (file.size > 2 * 1024 * 1024) { failures.push('图片超过 2 MB，仅桌面版可插入本地图片文件'); continue; }
+        try { refs.push(`![粘贴图片](${await readAsDataURL(file)})`); }
+        catch (error) { failures.push(error?.message || '图片插入失败'); }
+      }
+    }
+    if (refs.length) {
+      replace(at.start, at.end, refs.join('\n\n'));
+      toast(refs.length > 1 ? `已插入 ${refs.length} 张图片` : desktop ? `已插入图片 ${singleName}` : '已插入内嵌图片');
+    }
+    if (failures.length) toast(failures[0] + (failures.length > 1 ? `（另有 ${failures.length - 1} 项失败）` : ''));
+  } finally { imageBusy = false; }
 }
 function indentSelection(outdent = false) {
     const s = range(), value = text(), p = locate(s.start);
