@@ -187,7 +187,7 @@ app.whenReady().then(async () => {
       const picked = await dialog.showSaveDialog(win, { title: '导出 HTML', defaultPath, filters: [{ name: 'HTML 文档', extensions: ['html', 'htm'] }] });
       if (picked.canceled || !picked.filePath) return { canceled: true };
       const written = await files.writeHtmlFile(picked.filePath, html);
-      return { exported: true, filename: written.filename };
+      return { exported: true, filename: written.filename, filepath: written.filepath };
     } catch (error) {
       return { error: error.message || '导出失败' };
     }
@@ -223,7 +223,7 @@ app.whenReady().then(async () => {
       await printer.loadFile(tempHtml);
       const pdf = await printer.webContents.printToPDF({ printBackground: true, preferCSSPageSize: true });
       const written = await files.writeBinaryFile(picked.filePath, pdf);
-      return { exported: true, filename: written.filename };
+      return { exported: true, filename: written.filename, filepath: written.filepath };
     } catch (error) {
       return { error: error.message || '导出失败' };
     } finally {

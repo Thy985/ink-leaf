@@ -883,9 +883,11 @@ async function runMobileFile(action, exportName = null, exportText = null) {
 // --- HTML export ------------------------------------------------------------
 // One offline file: full-document render (MathML-only formulas, anchored
 // footnotes) plus a small embedded stylesheet. Images follow the editor's
-// privacy stance — data URLs embed as-is; remote and local images embed only
-// if they were actually loaded during this session, everything else becomes a
-// visible placeholder note instead of a silent network or file request.
+// privacy stance — data URLs embed as-is and remote images embed only if they
+// were actually loaded during this session. On the desktop, local images are
+// read through the bridge at export time and embedded automatically; anything
+// still unresolved becomes a visible placeholder note instead of a silent
+// network or file request.
 const EXPORT_CSS = `
 :root{color-scheme:light dark}
 *{box-sizing:border-box}
@@ -947,22 +949,33 @@ function exportImage(url, box) {
   return img;
 }
 
-function exportBodyHTML() {
+async function exportBodyHTML() {
   const host = document.createElement('template');
   host.innerHTML = renderDocumentHTML(text(), { doc });
-  host.content.querySelectorAll('.ink-image').forEach((box) => {
+  for (const box of [...host.content.querySelectorAll('.ink-image')]) {
     const src = box.dataset.inkSrc || '';
     const kind = classifyImage(src);
     const cached = imageCache.get(src);
+    let url = null;
+    if (kind === 'data') url = src;
+    else if (cached?.ok) url = cached.url;
+    else if (kind === 'local' && desktop) {
+      // Export-only embed: read through the bridge without touching imageCache,
+      // so exporting never changes the editor's own image card states.
+      try {
+        const result = await desktop.readImage(src);
+        if (result?.ok && result.dataUrl) url = result.dataUrl;
+      } catch { /* 文件丢失等，保持占位 */ }
+    }
     let node;
-    if (kind === 'data' || cached?.ok) node = exportImage(kind === 'data' ? src : cached.url, box);
+    if (url) node = exportImage(url, box);
     else {
       node = document.createElement('span');
       node.className = 'ink-export-missing';
       node.textContent = kind === 'remote' ? `网络图片未嵌入（导出前先在编辑器中加载）：${src}` : `本地图片未嵌入：${src}`;
     }
     box.replaceWith(node);
-  });
+  }
   return host.innerHTML;
 }
 
@@ -975,34 +988,46 @@ function exportBaseName() {
   return ((first ? headingLabel(first) : '') || filename.replace(/\.[^.]+$/, '') || '文档').trim().slice(0, 80).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-') || '文档';
 }
 
+let exportBusy = false;
+
 async function exportHTML() {
   if (composing) { toast('请先完成输入法选词，再导出。'); return; }
-  if (mobileBusy || desktopBusy) return;
-  const base = exportBaseName();
-  const html = exportDocumentHTML(base, exportBodyHTML());
-  if (desktop) {
-    try {
-      const result = await desktop.exportHtml(html);
-      if (result?.exported) toast(`已导出 ${result.filename}`);
-      else if (result?.error) toast(result.error);
-    } catch (error) { toast(error?.message || '导出失败，内容仍保留在编辑器中'); }
-    return;
+  if (exportBusy || mobileBusy || desktopBusy) return;
+  exportBusy = true;
+  $('status').textContent = '正在导出…';
+  try {
+    const base = exportBaseName();
+    const html = exportDocumentHTML(base, await exportBodyHTML());
+    if (desktop) {
+      try {
+        const result = await desktop.exportHtml(html);
+        if (result?.exported) toast(`已导出 ${result.filepath || result.filename}`);
+        else if (result?.error) toast(result.error);
+      } catch (error) { toast(error?.message || '导出失败，内容仍保留在编辑器中'); }
+      return;
+    }
+    if (isAndroid) return runMobileFile('export', base + '.html', html);
+    downloadBlob(base + '.html', new Blob([html], { type: 'text/html;charset=utf-8' }));
+    toast('已发起 HTML 下载，请在浏览器下载中查看');
+  } finally {
+    exportBusy = false;
+    persist();
   }
-  if (isAndroid) return runMobileFile('export', base + '.html', html);
-  downloadBlob(base + '.html', new Blob([html], { type: 'text/html;charset=utf-8' }));
-  toast('已发起 HTML 下载，请在浏览器下载中查看');
 }
 
 async function exportPDF() {
   if (composing) { toast('请先完成输入法选词，再导出。'); return; }
-  if (mobileBusy || desktopBusy) return;
+  if (exportBusy || mobileBusy || desktopBusy) return;
   if (!desktop) { toast('PDF 导出目前仅在桌面版提供'); return; }
-  const html = exportDocumentHTML(exportBaseName(), exportBodyHTML()).replace('</style>', PRINT_CSS + '</style>');
+  exportBusy = true;
+  $('status').textContent = '正在导出…';
   try {
+    const html = exportDocumentHTML(exportBaseName(), await exportBodyHTML()).replace('</style>', PRINT_CSS + '</style>');
     const result = await desktop.exportPdf(html);
-    if (result?.exported) toast(`已导出 ${result.filename}`);
+    if (result?.exported) toast(`已导出 ${result.filepath || result.filename}`);
     else if (result?.error) toast(result.error);
   } catch (error) { toast(error?.message || '导出失败，内容仍保留在编辑器中'); }
+  finally { exportBusy = false; persist(); }
 }
 
 // Android may stop the WebView without beforeunload. Flush synchronously when
