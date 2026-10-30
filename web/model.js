@@ -27,6 +27,15 @@ const HTML_VOID_TAGS = new Set(['area','base','br','col','embed','hr','img','inp
 
 export function escape(text) { return String(text).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
 
+// Image markdown never becomes a live <img> here. Both render paths emit this inert
+// placeholder; only the app's resolution layer may create an <img> after classifying the
+// source (data URL, user-confirmed https, or a desktop bridge read inside the document
+// directory). Values ship as escaped data attributes, so nothing loads by itself.
+export function imagePlaceholder(src, alt = '', title = '') {
+  const attrs = ` data-ink-src="${escape(src)}" data-ink-alt="${escape(String(alt ?? ''))}"${title ? ` data-ink-title="${escape(title)}"` : ''}`;
+  return `<span class="ink-image" contenteditable="false" data-ink-state="pending"${attrs}><span class="ink-image-inner"><span class="ink-image-icon" aria-hidden="true"></span><span class="ink-image-label">${escape(String(alt ?? '') || '图片')}</span></span></span>`;
+}
+
 function tableLine(line) { return line.includes('|') && line.trim().length > 0; }
 function classifyList(first) {
   const m = LIST_RE.exec(first); if (!m) return null;

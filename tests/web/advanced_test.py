@@ -88,9 +88,13 @@ with sync_playwright() as p:
  raw=table+'\n\n'+r'$$x^2$$'+'\n\n  - nested\n\n<div><b>safe</b></div>'
  load(raw);page.locator('#source-toggle').click();assert page.locator('#source').input_value()==raw
  page.locator('#source-toggle').click()
- with page.expect_download() as event:page.locator('#save').click()
- file=ROOT/'advanced-export.md';event.value.save_as(file);assert file.read_text()==raw;file.unlink()
- ok('复杂语法源码切换与下载逐字一致')
+ page.evaluate('''() => { window.__savedFile = null; window.showSaveFilePicker = async (opts) => { const name = opts.suggestedName; return { kind: 'file', name, createWritable: async () => ({ parts: [], async write(part) { this.parts.push(await part.text()); }, async close() { window.__savedFile = { name, text: this.parts.join('') }; } }), getFile: async () => ({ name, size: 0 }), queryPermission: async () => 'granted', requestPermission: async () => 'granted' }; }; }''')
+ page.locator('#save').click()
+ for _ in range(50):
+  if page.evaluate('Boolean(window.__savedFile)'): break
+  page.wait_for_timeout(100)
+ saved=page.evaluate('window.__savedFile');assert saved['text']==raw and saved['name'].endswith('.md'),repr(saved)
+ ok('复杂语法源码切换与 FSA 保存逐字一致')
  page.wait_for_timeout(350);page.reload();page.wait_for_function('Boolean(window.inkstone)');assert md()==raw
  ok('复杂文档本地持久化恢复')
  page.set_viewport_size({'width':390,'height':844});blur();assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')

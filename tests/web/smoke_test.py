@@ -172,14 +172,32 @@ with sync_playwright() as p:
     assert markdown() == '# 源码\n\n**保留**\n'
     page.locator('#source-toggle').click()
     assert page.locator('#editor .heading').inner_text() == '源码'
-    with page.expect_download() as info:
-        page.locator('#save').click()
-    download = info.value
-    saved = ROOT / 'test-export.md'
-    download.save_as(saved)
-    assert saved.read_text() == '# 源码\n\n**保留**\n'
-    saved.unlink()
-    ok('源码视图与 .md 下载内容一致')
+    # Headless Chromium exposes the File System Access API but aborts real pickers, so stub a
+    # writable handle and verify the FSA save path writes the same bytes a download would.
+    page.evaluate('''() => {
+      window.__savedFile = null;
+      window.showSaveFilePicker = async (opts) => {
+        const name = opts.suggestedName;
+        return {
+          kind: 'file', name,
+          createWritable: async () => ({
+            parts: [],
+            async write(part) { this.parts.push(await part.text()); },
+            async close() { window.__savedFile = { name, text: this.parts.join('') }; },
+          }),
+          getFile: async () => ({ name, size: 0 }),
+          queryPermission: async () => 'granted',
+          requestPermission: async () => 'granted',
+        };
+      };
+    }''')
+    page.locator('#save').click()
+    for _ in range(50):
+        if page.evaluate('Boolean(window.__savedFile)'): break
+        page.wait_for_timeout(100)
+    saved = page.evaluate('window.__savedFile')
+    assert saved['name'] == '测试.md' and saved['text'] == '# 源码\n\n**保留**\n', saved
+    ok('源码视图与 FSA 保存内容一致')
 
     page.wait_for_timeout(400)
     page.reload()

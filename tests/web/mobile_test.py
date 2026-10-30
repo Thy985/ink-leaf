@@ -218,15 +218,34 @@ def run():
         passed("移动 Web file input 导入 UTF-8 BOM 与 CRLF")
 
         source_set(page, "导出内容\n")
-        with page.expect_download() as download_info:
-            page.locator("#save").click()
-        download = download_info.value
-        exported = ROOT / "mobile-blob-export.md"
-        download.save_as(exported)
-        assert exported.read_text(encoding="utf-8") == "导出内容\n"
-        exported.unlink()
+        # The test context is desktop Chromium in a narrow viewport, so the save path uses the
+        # File System Access API; stub a writable handle since headless pickers always abort.
+        page.evaluate("""() => {
+          window.__savedFile = null;
+          window.showSaveFilePicker = async (opts) => {
+            const name = opts.suggestedName;
+            return {
+              kind: 'file', name,
+              createWritable: async () => ({
+                parts: [],
+                async write(part) { this.parts.push(await part.text()); },
+                async close() { window.__savedFile = { name, text: this.parts.join('') }; },
+              }),
+              getFile: async () => ({ name, size: 0 }),
+              queryPermission: async () => 'granted',
+              requestPermission: async () => 'granted',
+            };
+          };
+        }""")
+        page.locator("#save").click()
+        for _ in range(50):
+            if page.evaluate("Boolean(window.__savedFile)"):
+                break
+            page.wait_for_timeout(100)
+        saved = page.evaluate("window.__savedFile")
+        assert saved and saved["text"] == "导出内容\n", saved
         assert page.locator("#dirty").inner_text() == ""
-        passed("移动 Web Blob 导出内容与 dirty 状态")
+        passed("移动 Web 文件保存内容与 dirty 状态")
 
         # Synthetic composition checks: these are event-contract tests, not a real IME test.
         source_set(page, "源码")

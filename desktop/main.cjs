@@ -139,7 +139,7 @@ function sendCommand(action) { if (win && !win.isDestroyed() && win.webContents)
 function menuTemplate() {
   const item = (label, action, accelerator) => ({ label, ...(accelerator ? { accelerator } : {}), click: () => action === 'fullscreen' ? win.setFullScreen(!win.isFullScreen()) : sendCommand(action) });
   return [
-    { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('关闭', 'close')] },
+    { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
     { label: '编辑', submenu: [item('撤销', 'undo', 'CommandOrControl+Z'), item('重做', 'redo', 'CommandOrControl+Y'), item('重做（备用）', 'redo', 'CommandOrControl+Shift+Z'), { type: 'separator' }, {role:'cut',label:'剪切'}, {role:'copy',label:'复制'}, {role:'paste',label:'粘贴'}, {role:'selectAll',label:'全选'}, { type: 'separator' }, item('粗体', 'bold', 'CommandOrControl+B'), item('斜体', 'italic', 'CommandOrControl+I'), item('链接', 'link', 'CommandOrControl+K'), item('查找', 'find', 'CommandOrControl+F'), item('替换', 'replace', 'CommandOrControl+H')] },
     { label: '视图', submenu: [item('源文', 'source', 'CommandOrControl+/'), item('专注', 'focus', 'F8'), item('主题', 'theme'), item('大纲', 'outline'), item('全屏', 'fullscreen', 'F11')] },
     { label: '帮助', submenu: [item('使用说明', 'help')] }
@@ -167,6 +167,69 @@ app.whenReady().then(async () => {
     const result = ipcLock.then(() => perform(action, snapshot));
     ipcLock = result.catch(() => {});
     return result.catch(error => { throw new Error(error.message || '桌面操作失败'); });
+  });
+  // Local images never travel as file paths — only a validated data URL comes back, and
+  // only when the path resolves inside the open document's own directory.
+  ipcMain.handle('desktop:image', async (event, relativePath) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的桌面请求' };
+    try {
+      const image = await files.readImage(opened?.filepath ? path.dirname(opened.filepath) : null, relativePath);
+      return { ok: true, dataUrl: image.dataUrl };
+    } catch (error) {
+      return { ok: false, message: error.message || '图片读取失败' };
+    }
+  });
+  ipcMain.handle('desktop:exportHtml', async (event, html) => {
+    if (!isTrusted(event)) return { canceled: true };
+    try {
+      if (typeof html !== 'string' || !html || Buffer.byteLength(html, 'utf8') > files.MAX_BYTES) throw new Error('导出内容超过 10 MB 限制');
+      const defaultPath = path.join(app.getPath('documents'), (state.filename || '未命名').replace(/\.(md|markdown|txt)$/i, '') + '.html');
+      const picked = await dialog.showSaveDialog(win, { title: '导出 HTML', defaultPath, filters: [{ name: 'HTML 文档', extensions: ['html', 'htm'] }] });
+      if (picked.canceled || !picked.filePath) return { canceled: true };
+      const written = await files.writeHtmlFile(picked.filePath, html);
+      return { exported: true, filename: written.filename };
+    } catch (error) {
+      return { error: error.message || '导出失败' };
+    }
+  });
+  // Clipboard images land next to the open document; the directory is derived from the
+  // main process's own state, never from renderer input.
+  ipcMain.handle('desktop:writeImage', async (event, mime, bytes) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的桌面请求' };
+    try {
+      if (!opened?.filepath) throw new Error('请先保存文档（Ctrl+S），再插入图片');
+      const filename = await files.writeImageFile(path.dirname(opened.filepath), mime, Buffer.from(bytes));
+      return { ok: true, filename };
+    } catch (error) {
+      return { ok: false, message: error.message || '图片写入失败' };
+    }
+  });
+  // PDF export reuses the same offline HTML pipeline as "导出 HTML"; a hidden sandboxed
+  // window prints it so formulas stay as MathML and images stay as embedded data URLs.
+  ipcMain.handle('desktop:exportPdf', async (event, html) => {
+    if (!isTrusted(event)) return { canceled: true };
+    let printer = null;
+    let tempHtml = null;
+    try {
+      if (typeof html !== 'string' || !html || Buffer.byteLength(html, 'utf8') > files.MAX_BYTES) throw new Error('导出内容超过 10 MB 限制');
+      const defaultPath = path.join(app.getPath('documents'), (state.filename || '未命名').replace(/\.(md|markdown|txt)$/i, '') + '.pdf');
+      const picked = await dialog.showSaveDialog(win, { title: '导出 PDF', defaultPath, filters: [{ name: 'PDF 文档', extensions: ['pdf'] }] });
+      if (picked.canceled || !picked.filePath) return { canceled: true };
+      if (path.extname(picked.filePath).toLowerCase() !== '.pdf') throw new Error('仅支持导出为 .pdf 文件');
+      // A temp file (not a data URL) keeps the pipeline free of navigation size limits.
+      tempHtml = path.join(app.getPath('temp'), `inkstone-export-${process.pid}-${Date.now()}.html`);
+      await fs.promises.writeFile(tempHtml, html, 'utf8');
+      printer = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false, images: true } });
+      await printer.loadFile(tempHtml);
+      const pdf = await printer.webContents.printToPDF({ printBackground: true, preferCSSPageSize: true });
+      const written = await files.writeBinaryFile(picked.filePath, pdf);
+      return { exported: true, filename: written.filename };
+    } catch (error) {
+      return { error: error.message || '导出失败' };
+    } finally {
+      if (printer && !printer.isDestroyed()) printer.destroy();
+      if (tempHtml) fs.unlink(tempHtml, () => {});
+    }
   });
   ipcMain.on('desktop:state', (event, next) => { if (!isTrusted(event) || closing) return; try { const checked = assertSnapshot(next); state = { ...state, ...checked }; if (state.dirty) scheduleRecovery(); else clearRecovery().catch(() => {}); if (pendingAfterRestore) { pendingAfterRestore = false; setImmediate(() => sendCommand('openPending')); } } catch {} });
   createWindow();

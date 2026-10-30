@@ -1,6 +1,6 @@
 import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobile.js';
 import { parseBlocks, serialize, renderInline, buildDocContext } from './model.js';
-import { previewMarkdown, needsPreview } from './vendor/renderer.js';
+import { previewMarkdown, needsPreview, renderDocumentHTML } from './vendor/renderer.js';
 
 const $ = (id) => document.getElementById(id);
 const editor = $('editor');
@@ -10,9 +10,9 @@ const STORAGE = desktop ? 'inkstone.desktop.draft.v03' : 'inkstone.draft.v03';
 let desktopReady = false;
 let desktopBusy = false;
 let desktopPath = null;
-const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.5**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。\n"
-  .replace('这里是 **墨页 v0.5**。', desktop ? '这里是 **墨页 Windows v0.5**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.5**。')
-  .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : isAndroid ? '文字留在此设备。点「导入」打开 Markdown，点「导出 .md」通过系统文件选择器保存新文件。草稿在应用内自动保留；请定期导出备份。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 下载 Markdown；原来的 v0.2 网站与草稿不受影响。');
+const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.7**。继续安静地写，也让更复杂的 Markdown 得到妥帖呈现。\n\n## 把信息，整理成表格\n\n| 语法 | 这次的变化 | 状态 |\n| :--- | :--- | :---: |\n| 图片 | 占位卡片、本地桥接与点击加载 | 已支持 |\n| 图片插入 | 粘贴或拖入，自动保存到文档目录 | 已支持 |\n| 导出 PDF | 公式与图片内嵌的打印版式 | 已支持 |\n| 表格与分割线 | 对齐、行内格式、转义竖线 | 已支持 |\n| 列表与任务 | 多级缩进、续行、退级 | 已支持 |\n| HTML 与公式 | 安全预览、本地数学排版 | 已支持 |\n\n点击表格可编辑原文，移开光标后恢复预览。Tab / Shift+Tab 在表格单元格之间移动。\n\n---\n\n## 从一行公式，到一个想法\n\n行内公式 $E = mc^2$，也可以自然地写在句子中。\n\n$$\n\\int_0^1 x^2\\,dx = \\frac{1}{3}\n$$\n\n## 给思路，多一点层次\n\n- 一个大方向\n  - 拆成可以行动的小步\n    - 再留意其中的细节\n- [x] 用 Tab 缩进，Shift+Tab 退级\n- [ ] 空列表项按 Enter，逐级退回正文\n\n## 原样表达，也自由排版\n\n转义字符：\\*这不是斜体\\*，\\# 这不是标题，AT&amp;T。\n\n<details>\n<summary>一小段安全的 HTML</summary>\n<p>支持 <mark>高亮</mark>、<kbd>键帽</kbd>、<sup>上标</sup> 等常用排版。脚本、表单、样式和嵌入内容不会执行。</p>\n</details>\n\n> 复杂的语法，依然可以拥有简单的写作体验。\n\n草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 保存，Ctrl / ⌘ + Shift + S 另存；工具栏可导出离线 HTML；原来的 v0.2 网站与草稿不受影响。\n"
+  .replace('这里是 **墨页 v0.7**。', desktop ? '这里是 **墨页 Windows v0.7**。' : isAndroid ? '这里是 **墨页 Android 适配预览**。' : '这里是 **墨页 v0.7**。')
+  .replace('草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 保存，Ctrl / ⌘ + Shift + S 另存；工具栏可导出离线 HTML；原来的 v0.2 网站与草稿不受影响。', desktop ? '文字留在你的电脑。Ctrl+O 打开本地文档，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为，「文件」菜单可导出 HTML 或 PDF。截图可直接粘贴或拖入编辑器，图片会保存到文档目录并插入相对路径。尚未保存的内容会自动保留恢复草稿；关闭窗口时会询问是否保存。' : isAndroid ? '文字留在此设备。点「导入」打开 Markdown，点「导出 .md」通过系统文件选择器保存新文件；工具栏可导出 HTML。草稿在应用内自动保留；请定期导出备份。' : '草稿只保存在当前浏览器、当前网址。Ctrl / ⌘ + S 保存，Ctrl / ⌘ + Shift + S 另存；工具栏可导出离线 HTML；粘贴截图会以 data URL 内嵌进文档；原来的 v0.2 网站与草稿不受影响。');
 let blocks = [];
 let doc = null;
 let activeId = null;
@@ -216,6 +216,7 @@ function render(sel = null) {
     if (editor.children[index] !== node) editor.insertBefore(node, editor.children[index] || null);
   });
   [...editor.children].forEach((n) => { if (!kept.has(n)) n.remove(); });
+  enhanceImages();
   updateUI();
   if (sel) restore(sel);
 }
@@ -228,6 +229,109 @@ function refreshCodePreview(id) {
   node.innerHTML = decorate(block);
   node._key = blockKey(block);
   node._stale = false;
+  enhanceImages(node);
+}
+
+// --- Image resolution -------------------------------------------------------
+// The renderer only ever emits inert .ink-image placeholders. This layer decides whether a
+// real <img> may exist: data URLs and user-confirmed https images, plus document-relative
+// images read through the desktop bridge. Everything else stays a visible placeholder.
+const REMOTE_IMAGE_RE = /^https:\/\//i;
+const DATA_IMAGE_RE = /^data:image\/(?:png|jpeg|gif|webp|bmp|avif);base64,[A-Za-z0-9+/=]+$/;
+const imageCache = new Map();
+
+function classifyImage(src) {
+  if (REMOTE_IMAGE_RE.test(src)) return 'remote';
+  if (DATA_IMAGE_RE.test(src)) return 'data';
+  return 'local';
+}
+function mountImage(box, url) {
+  box.dataset.inkState = 'ready';
+  box.classList.remove('ink-image-loading', 'ink-image-error');
+  box.classList.add('ink-image-ready');
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = box.dataset.inkAlt || '';
+  img.draggable = false;
+  img.decoding = 'async';
+  if (box.dataset.inkTitle) img.title = box.dataset.inkTitle;
+  box.replaceChildren(img);
+}
+function failImage(box, message) {
+  box.dataset.inkState = 'error';
+  box.classList.remove('ink-image-loading');
+  box.classList.add('ink-image-error');
+  box.querySelectorAll('.ink-image-note').forEach((node) => node.remove());
+  const note = document.createElement('span');
+  note.className = 'ink-image-note';
+  note.textContent = message;
+  box.append(note);
+}
+function requestImage(box, src) {
+  box.dataset.inkState = 'loading';
+  box.classList.add('ink-image-loading');
+  const note = document.createElement('span');
+  note.className = 'ink-image-note';
+  note.textContent = '正在加载…';
+  box.append(note);
+  const probe = new Image();
+  probe.onload = () => { imageCache.set(src, { ok: true, url: src }); if (box.isConnected) mountImage(box, src); };
+  probe.onerror = () => { imageCache.set(src, { ok: false, message: '图片加载失败，点击重试' }); if (box.isConnected) failImage(box, '图片加载失败，点击重试'); };
+  probe.src = src;
+}
+async function resolveLocalImage(box, src) {
+  box.dataset.inkState = 'loading';
+  box.classList.add('ink-image-loading');
+  try {
+    const result = await desktop.readImage(src);
+    if (!result.ok) throw new Error(result.message || '图片读取失败');
+    imageCache.set(src, { ok: true, url: result.dataUrl });
+    if (box.isConnected) mountImage(box, result.dataUrl);
+  } catch (error) {
+    imageCache.set(src, { ok: false, message: error.message });
+    if (box.isConnected) failImage(box, error.message || '图片读取失败，点击重试');
+  }
+}
+function armRemoteImage(box, src) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'ink-image-load';
+  button.tabIndex = 0;
+  button.setAttribute('aria-label', `加载网络图片 ${box.dataset.inkAlt || ''}`.trim());
+  button.textContent = '加载网络图片';
+  box.append(button);
+}
+function armLocalImage(box, src) {
+  const note = document.createElement('span');
+  note.className = 'ink-image-note';
+  if (desktop) {
+    if (desktopPath) { note.textContent = '正在读取本地图片…'; box.append(note); resolveLocalImage(box, src); return; }
+    note.textContent = '保存文档后可显示本地图片';
+  } else {
+    note.textContent = '本地图片需在桌面版打开后显示';
+  }
+  box.append(note);
+}
+function enhanceImages(root = editor) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll('.ink-image[data-ink-state="pending"]').forEach((box) => {
+    const src = box.dataset.inkSrc || '';
+    const cached = imageCache.get(src);
+    if (cached?.ok) return mountImage(box, cached.url);
+    if (cached && cached.ok === false) return failImage(box, cached.message);
+    const kind = classifyImage(src);
+    if (kind === 'data') return requestImage(box, src);
+    if (kind === 'remote') return armRemoteImage(box, src);
+    return armLocalImage(box, src);
+  });
+}
+function retryImage(box) {
+  const src = box.dataset.inkSrc || '';
+  imageCache.delete(src);
+  box.dataset.inkState = 'pending';
+  box.classList.remove('ink-image-error', 'ink-image-loading');
+  box.querySelectorAll('.ink-image-note').forEach((node) => node.remove());
+  enhanceImages(box.closest('.block-preview') || editor);
 }
 
 function updateActive() {
@@ -470,6 +574,8 @@ editor.addEventListener('compositionend', () => {
 editor.addEventListener('paste', (event) => {
   if (composing) return;
   event.preventDefault();
+  const image = pickClipboardImage(event.clipboardData);
+  if (image) { insertImage(image); return; }
   const s = range();
   replace(s.start, s.end, event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n'));
 });
@@ -482,7 +588,46 @@ editor.addEventListener('copy', (event) => {
   const s = range();
   if (s.start !== s.end) { event.preventDefault(); event.clipboardData.setData('text/plain', text().slice(s.start, s.end)); }
 });
-editor.addEventListener('drop', (event) => { event.preventDefault(); toast('请用「打开」导入 Markdown，或粘贴纯文本。'); });
+editor.addEventListener('dragover', (event) => {
+  // Only claim file drags; in-editor text drag-and-drop keeps the browser default.
+  if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault();
+});
+editor.addEventListener('drop', (event) => {
+  event.preventDefault();
+  const file = [...(event.dataTransfer?.files || [])].find((f) => PASTE_IMAGE_MIME.has(f.type));
+  if (file) { insertImage(file); return; }
+  toast('请用「打开」导入 Markdown，或粘贴纯文本。');
+});
+const PASTE_IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp', 'image/avif']);
+function pickClipboardImage(data) {
+  for (const item of data?.items || []) {
+    if (item.kind === 'file' && PASTE_IMAGE_MIME.has(item.type)) { const file = item.getAsFile(); if (file) return file; }
+  }
+  return null;
+}
+// Desktop writes the bytes beside the saved document and inserts a relative path; the
+// web (and Android WebView) has no file-write access, so screenshots embed as data URLs.
+async function insertImage(file) {
+  if (mobileBusy || desktopBusy) return;
+  if (desktop) {
+    if (!desktopPath) { toast('请先保存文档（Ctrl+S），再插入图片'); return; }
+    try {
+      const bytes = await file.arrayBuffer();
+      const result = await desktop.writeImage(file.type, bytes);
+      if (result?.ok) { const at = range(); replace(at.start, at.end, `![粘贴图片](${result.filename})`); toast(`已插入图片 ${result.filename}`); }
+      else if (result?.message) toast(result.message);
+    } catch (error) { toast(error?.message || '图片插入失败'); }
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) { toast('图片超过 2 MB，仅桌面版可插入本地图片文件'); return; }
+  const reader = new FileReader();
+  reader.onerror = () => toast('读取剪贴板图片失败');
+  reader.onload = () => {
+    try { const at = range(); replace(at.start, at.end, `![粘贴图片](${reader.result})`); toast('已插入内嵌图片'); }
+    catch (error) { toast(error?.message || '图片插入失败'); }
+  };
+  reader.readAsDataURL(file);
+}
 function indentSelection(outdent = false) {
     const s = range(), value = text(), p = locate(s.start);
     if (p.block.type === 'table') {
@@ -572,9 +717,31 @@ source.addEventListener('compositionend', () => {
   compositionTimer = setTimeout(() => { composing = false; source.dispatchEvent(new Event('input')); }, 0);
 });
 $('open').onclick = () => desktop ? runDesktop('open') : isAndroid ? runMobileFile('open') : openWebFile();
-function openWebFile() {
+// Chrome/Edge open and overwrite files in place through the File System Access API;
+// other browsers keep the classic file input and download flow.
+const supportsFSA = typeof window.showOpenFilePicker === 'function';
+const FSA_TYPES = [{ description: 'Markdown/文本', accept: { 'text/markdown': ['.md', '.markdown'], 'text/plain': ['.txt'] } }];
+let webHandle = null;
+function mdFilename(name) { return /\.(md|markdown)$/i.test(name) ? name : name.replace(/\.[^.]+$/, '') + '.md'; }
+function forgetWebHandle() { webHandle = null; }
+async function openWebFile() {
   if (composing) { toast('请先完成输入法选词，再导入。'); return; }
-  $('file-input').click();
+  if (!supportsFSA) { $('file-input').click(); return; }
+  if (text() !== savedText && !window.confirm('当前文档有未导出修改。打开文件会替换浏览器草稿，是否继续？')) return;
+  try {
+    const [handle] = await window.showOpenFilePicker({ types: FSA_TYPES, multiple: false });
+    const file = await handle.getFile();
+    if (file.size > 2 * 1024 * 1024) { toast('暂只支持 2 MB 以内的文本文件。'); return; }
+    const value = (await file.text()).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    filename = file.name; savedText = value; webHandle = handle;
+    history = []; future = []; lastKind = ''; activeId = null;
+    imageCache.clear();
+    apply(value, { a: 0, f: 0 }, 'open', false);
+    toast(`已打开 ${filename}`);
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+    toast('打开失败，请尝试 UTF-8 编码的 Markdown 文件。');
+  }
 }
 $('file-input').onchange = async (event) => {
   const file = event.target.files[0];
@@ -584,40 +751,87 @@ $('file-input').onchange = async (event) => {
   if (text() !== savedText && !window.confirm('当前文档有未导出修改。打开文件会替换浏览器草稿，是否继续？')) return;
   try {
     const value = (await file.text()).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-    filename = file.name; savedText = value; history = []; future = []; lastKind = '';
+    filename = file.name; savedText = value; forgetWebHandle();
+    history = []; future = []; lastKind = ''; imageCache.clear();
     apply(value, { a: 0, f: 0 }, 'open', false);
     toast(`已打开 ${filename}`);
   } catch { toast('读取失败，请尝试 UTF-8 编码的 Markdown 文件。'); }
 };
-function save() {
+async function save() {
   if (desktop) return runDesktop('save');
   if (isAndroid) return runMobileFile('export');
   if (composing) { toast('请先完成输入法选词，再保存。'); return; }
   const value = text();
+  if (supportsFSA) {
+    try {
+      if (!webHandle) {
+        webHandle = await window.showSaveFilePicker({ suggestedName: mdFilename(filename), types: FSA_TYPES });
+      } else if (await webHandle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+        if (await webHandle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw Object.assign(new Error('未授予写入权限'), { name: 'PermissionDenied' });
+      }
+      const writable = await webHandle.createWritable();
+      await writable.write(new Blob([value], { type: 'text/markdown;charset=utf-8' }));
+      await writable.close();
+      const file = await webHandle.getFile();
+      if (file.name) filename = file.name;
+      savedText = value; updateUI(); persist(); toast('已保存到本地文件');
+      return;
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      if (error?.name === 'PermissionDenied') { toast('未授予文件写入权限，内容仍保留在编辑器中'); return; }
+      toast('写入失败，已改为下载 .md');
+      forgetWebHandle();
+    }
+  }
   const blob = new Blob([value], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = /\.(md|markdown)$/i.test(filename) ? filename : filename.replace(/\.[^.]+$/, '') + '.md';
-  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  downloadBlob(mdFilename(filename), blob);
   savedText = value; updateUI(); persist(); toast('已发起 .md 下载，请在浏览器下载中查看');
 }
-async function runMobileFile(action) {
+async function saveAsWeb() {
+  if (composing) { toast('请先完成输入法选词，再保存。'); return; }
+  if (!supportsFSA) { openName(false); return; }
+  try {
+    const handle = await window.showSaveFilePicker({ suggestedName: mdFilename(filename), types: FSA_TYPES });
+    const writable = await handle.createWritable();
+    await writable.write(new Blob([text()], { type: 'text/markdown;charset=utf-8' }));
+    await writable.close();
+    webHandle = handle;
+    const file = await handle.getFile();
+    if (file.name) filename = file.name;
+    savedText = text(); updateUI(); persist(); toast(`已另存为 ${filename}`);
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+    toast('另存为失败，内容仍保留在编辑器中');
+  }
+}
+function downloadBlob(name, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+async function runMobileFile(action, exportName = null, exportText = null) {
   if (mobileBusy) return;
   if (composing) { toast('请先完成输入法选词，再进行文件操作'); return; }
   if (action === 'open' && text() !== savedText && !window.confirm('当前文档有未导出修改。导入会替换本地草稿，是否继续？')) return;
-  const snapshot = text();
+  // exportName marks an HTML export: the payload is rendered HTML, and finishing
+  // one must not mark the Markdown document itself as saved.
+  const exportHtml = action === 'export' && exportName !== null;
+  const snapshot = exportHtml ? exportText : text();
   if (action === 'export' && new TextEncoder().encode(snapshot).length > 2 * 1024 * 1024) { toast('导出暂只支持 2 MB 以内的 UTF-8 文本。'); return; }
   mobileBusy = true;
   const freeze = action === 'open';
   if (freeze) { editor.contentEditable = 'false'; source.readOnly = true; }
   try {
-    const result = await nativeFile(action, { filename: /\.(md|markdown)$/i.test(filename) ? filename : filename.replace(/\.[^.]+$/, '') + '.md', text: snapshot });
+    const result = await nativeFile(action, { filename: exportName ?? mdFilename(filename), text: snapshot });
     if (result.canceled) return;
     if (action === 'export') {
-      savedText = snapshot; updateUI(); persist(); toast('已导出到所选位置');
+      if (!exportHtml) { savedText = snapshot; updateUI(); persist(); }
+      toast('已导出到所选位置');
     } else if (typeof result.text === 'string') {
       const value = result.text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
       filename = result.filename || '导入文档.md'; savedText = value;
       history = []; future = []; lastKind = ''; activeId = null;
+      imageCache.clear();
       beforeSelection = { a: 0, f: 0 };
       // Import should not summon the keyboard behind the system file picker.
       apply(value, null, 'open', false);
@@ -629,6 +843,131 @@ async function runMobileFile(action) {
     mobileBusy = false;
     if (freeze) { editor.contentEditable = 'true'; source.readOnly = false; }
   }
+}
+
+// --- HTML export ------------------------------------------------------------
+// One offline file: full-document render (MathML-only formulas, anchored
+// footnotes) plus a small embedded stylesheet. Images follow the editor's
+// privacy stance — data URLs embed as-is; remote and local images embed only
+// if they were actually loaded during this session, everything else becomes a
+// visible placeholder note instead of a silent network or file request.
+const EXPORT_CSS = `
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{margin:0 auto;padding:56px 22px 90px;max-width:46em;font-family:Georgia,"Noto Serif CJK SC","Songti SC",SimSun,serif;font-size:17px;line-height:1.9;color:#30332f;background:#fffefa;overflow-wrap:anywhere}
+h1,h2,h3,h4,h5,h6{font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.4;margin:1.7em 0 .6em;letter-spacing:-.3px}
+h1{font-size:1.9em}h2{font-size:1.4em}h3{font-size:1.15em}h4,h5,h6{font-size:1em}
+p{margin:.7em 0}a{color:#526b52}
+blockquote{margin:1em 0;padding:.2em 1.1em;border-left:3px solid #acb59b;color:#5d675a;background:#f5f6ef}
+code{font-family:Consolas,"Liberation Mono",monospace;font-size:.85em;background:#edf0e7;border-radius:3px;padding:2px 5px;color:#63734f}
+pre{background:#f1f3ec;border:1px solid #e3e8da;border-radius:6px;padding:14px 18px;overflow-x:auto;font-size:13.5px;line-height:1.75}
+pre code{background:none;padding:0;color:inherit;font-size:inherit}
+table{border-collapse:collapse;margin:1em 0;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;font-size:14.5px;line-height:1.7;width:100%}
+th,td{border:1px solid #e5e6de;padding:9px 14px;text-align:left}
+th[align=center],td[align=center]{text-align:center}th[align=right],td[align=right]{text-align:right}
+th{background:#edf1e9;color:#526b52;font-weight:600}tbody tr:nth-child(even) td{background:#f4f6ee}
+hr{border:0;border-top:1px solid #adb99f;margin:2.2em 0}
+mark{background:#e6e8ba;color:#434932;padding:1px 4px;border-radius:2px}
+kbd{font:12px Consolas,monospace;border:1px solid #e5e6de;background:#f6f5f1;padding:2px 5px;border-radius:3px;color:#30332f;margin:0}
+details{padding:12px 18px;border:1px solid #e5e6de;border-radius:5px;background:#f5f6ef;margin:1em 0}
+summary{cursor:pointer;font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;color:#526b52;font-weight:600}
+img{max-width:100%;height:auto;border-radius:4px}
+sup a{text-decoration:none;color:#526b52;font-weight:600}
+.ink-fn{font-size:.9em;color:#75806c;border-left:2px solid #e5e6de;padding-left:10px;margin:.35em 0}
+.ink-fn-num{color:#526b52;font-weight:600}
+.math-error{display:inline-block;color:#a34c3e;background:#a34c3e0c;border-bottom:1px dashed #a34c3e;font:14px/1.8 Consolas,monospace;white-space:pre-wrap}
+.ink-export-missing{display:inline-block;font-size:12.5px;color:#8b8e86;background:#f1f2ea;border:1px dashed #c9cdbd;border-radius:4px;padding:2px 8px}
+.hljs-keyword,.hljs-built_in{color:#7a5d8f}.hljs-string,.hljs-literal{color:#5f7a45}
+.hljs-comment{color:#9aa08f;font-style:italic}.hljs-number{color:#a05f3c}
+.hljs-title,.hljs-function{color:#4a6b7a}.hljs-attr,.hljs-variable{color:#8a6b3f}
+@media (prefers-color-scheme:dark){
+body{color:#d7ddcf;background:#232823}a{color:#afc69f}
+blockquote{background:#2b3328;border-left-color:#748969;color:#b4c2a7}
+code{background:#35412c;color:#c8d9ba}pre{background:#1f251e;border-color:#3b4933}
+table,th,td{border-color:#3a4336}th{background:#333f2c;color:#afc69f}tbody tr:nth-child(even) td{background:#2b332a}
+hr{border-top-color:#5a6650}mark{background:#4d5032;color:#e2e6c8}
+kbd{background:#2b3328;border-color:#3a4336;color:#d7ddcf}
+details{background:#2b3328;border-color:#3a4336}summary{color:#afc69f}
+.ink-fn{color:#a9b79e;border-left-color:#3a4336}.ink-fn-num{color:#afc69f}
+.ink-export-missing{color:#9ba792;background:#2b332a;border-color:#4a5442}
+.hljs-keyword,.hljs-built_in{color:#c7a9dd}.hljs-string,.hljs-literal{color:#a9c98a}
+.hljs-comment{color:#7c8974}.hljs-number{color:#d9a07a}
+.hljs-title,.hljs-function{color:#9cc4d4}.hljs-attr,.hljs-variable{color:#d6bd8a}
+}`;
+
+// PDF-only additions on top of EXPORT_CSS: page margins and pagination guards so
+// code blocks, quotes and tables are not sliced across printed pages.
+const PRINT_CSS = `@page{margin:18mm 16mm}
+pre,blockquote,details,table,.footnote-def,.ink-image,.ink-image-ready{break-inside:avoid;page-break-inside:avoid}
+h1,h2,h3,h4,h5,h6{break-after:avoid;page-break-after:avoid}`;
+
+function exportImage(url, box) {
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = box.dataset.inkAlt || '';
+  img.loading = 'lazy';
+  img.referrerPolicy = 'no-referrer';
+  img.decoding = 'async';
+  if (box.dataset.inkTitle) img.title = box.dataset.inkTitle;
+  return img;
+}
+
+function exportBodyHTML() {
+  const host = document.createElement('template');
+  host.innerHTML = renderDocumentHTML(text(), { doc });
+  host.content.querySelectorAll('.ink-image').forEach((box) => {
+    const src = box.dataset.inkSrc || '';
+    const kind = classifyImage(src);
+    const cached = imageCache.get(src);
+    let node;
+    if (kind === 'data' || cached?.ok) node = exportImage(kind === 'data' ? src : cached.url, box);
+    else {
+      node = document.createElement('span');
+      node.className = 'ink-export-missing';
+      node.textContent = kind === 'remote' ? `网络图片未嵌入（导出前先在编辑器中加载）：${src}` : `本地图片未嵌入：${src}`;
+    }
+    box.replaceWith(node);
+  });
+  return host.innerHTML;
+}
+
+function exportDocumentHTML(title, body) {
+  return '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>' + esc(title) + '</title>\n<style>' + EXPORT_CSS + '</style>\n</head>\n<body>\n<main>\n' + body + '\n</main>\n</body>\n</html>\n';
+}
+
+function exportBaseName() {
+  const first = blocks.find((b) => b.type === 'heading');
+  return ((first ? headingLabel(first) : '') || filename.replace(/\.[^.]+$/, '') || '文档').trim().slice(0, 80).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-') || '文档';
+}
+
+async function exportHTML() {
+  if (composing) { toast('请先完成输入法选词，再导出。'); return; }
+  if (mobileBusy || desktopBusy) return;
+  const base = exportBaseName();
+  const html = exportDocumentHTML(base, exportBodyHTML());
+  if (desktop) {
+    try {
+      const result = await desktop.exportHtml(html);
+      if (result?.exported) toast(`已导出 ${result.filename}`);
+      else if (result?.error) toast(result.error);
+    } catch (error) { toast(error?.message || '导出失败，内容仍保留在编辑器中'); }
+    return;
+  }
+  if (isAndroid) return runMobileFile('export', base + '.html', html);
+  downloadBlob(base + '.html', new Blob([html], { type: 'text/html;charset=utf-8' }));
+  toast('已发起 HTML 下载，请在浏览器下载中查看');
+}
+
+async function exportPDF() {
+  if (composing) { toast('请先完成输入法选词，再导出。'); return; }
+  if (mobileBusy || desktopBusy) return;
+  if (!desktop) { toast('PDF 导出目前仅在桌面版提供'); return; }
+  const html = exportDocumentHTML(exportBaseName(), exportBodyHTML()).replace('</style>', PRINT_CSS + '</style>');
+  try {
+    const result = await desktop.exportPdf(html);
+    if (result?.exported) toast(`已导出 ${result.filename}`);
+    else if (result?.error) toast(result.error);
+  } catch (error) { toast(error?.message || '导出失败，内容仍保留在编辑器中'); }
 }
 
 // Android may stop the WebView without beforeunload. Flush synchronously when
@@ -643,6 +982,7 @@ function flushDraft() {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushDraft(); });
 window.addEventListener('pagehide', flushDraft);
 $('save').onclick = save;
+$('export-html').onclick = exportHTML;
 document.addEventListener('keydown', (event) => {
   if (composing || event.isComposing || !(event.metaKey || event.ctrlKey) || event.altKey) return;
   const key = event.key.toLowerCase();
@@ -661,7 +1001,7 @@ document.addEventListener('keydown', (event) => {
   if (key === 'k') { event.preventDefault(); format('link'); return; }
   if (['s', 'o', 'b', 'i', 'z', 'y'].includes(key)) {
     event.preventDefault();
-    if (key === 's') save();
+    if (key === 's') (event.shiftKey ? saveAsWeb() : save());
     else if (key === 'o') $('open').click();
     else if (key === 'b') format('bold');
     else if (key === 'i') format('italic');
@@ -734,9 +1074,10 @@ $('name-dialog').addEventListener('close', () => {
   filename = /\.(md|markdown)$/i.test(name) ? name : name + '.md';
   if (namingNew) {
     savedText = ''; history = []; future = []; lastKind = ''; beforeSelection = { a: 0, f: 0 };
+    forgetWebHandle(); imageCache.clear();
     apply('', { a: 0, f: 0 }, 'new', false);
     toast('新的一页，开始落笔吧');
-  } else { updateUI(); persist(); toast('已更新下载文件名'); }
+  } else { forgetWebHandle(); updateUI(); persist(); toast('已更新下载文件名'); }
 });
 function flashAnchor(node) {
   node.classList.add('flash');
@@ -746,8 +1087,9 @@ function flashAnchor(node) {
 editor.addEventListener('mousedown', (event) => {
   if (composing) return;
   if (event.target.closest('.task-box')) event.preventDefault();
+  if (event.target.closest('.ink-image button, .ink-image[data-ink-state="error"]')) event.preventDefault();
   const preview = event.target.closest('.block-preview');
-  if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary') && !event.target.closest('a[href^="#ink-"]')) {
+  if (preview && !(event.ctrlKey || event.metaKey) && !event.target.closest('summary') && !event.target.closest('a[href^="#ink-"]') && !event.target.closest('.ink-image button, .ink-image[data-ink-state="error"]')) {
     event.preventDefault();
     const id = preview.parentElement.dataset.id;
     const index = blocks.findIndex(b => b.id === id);
@@ -767,6 +1109,16 @@ editor.addEventListener('click', (event) => {
     activeId = null; editor.blur(); updateActive();
     return;
   }
+  const loadButton = event.target.closest('.ink-image-load');
+  if (loadButton && !composing) {
+    event.preventDefault();
+    const box = loadButton.closest('.ink-image');
+    const src = box?.dataset.inkSrc || '';
+    if (box && src && !imageCache.has(src)) requestImage(box, src);
+    return;
+  }
+  const errorBox = event.target.closest('.ink-image[data-ink-state="error"]');
+  if (errorBox && !composing) { event.preventDefault(); retryImage(errorBox); return; }
   const link = event.target.closest('a');
   if (link) {
     event.preventDefault();
@@ -783,6 +1135,7 @@ editor.addEventListener('click', (event) => {
 });
 editor.addEventListener('keydown', (event) => {
   if (event.target.closest('.task-box') && [' ', 'Enter'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); event.target.click(); }
+  if (event.target.closest('.ink-image-load') && [' ', 'Enter'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); event.target.click(); }
 });
 
 // Literal, Unicode-aware search in Markdown source. Replacements form one undo step.
@@ -909,6 +1262,7 @@ function installNativeDocument(result, action) {
   if (typeof result.text === 'string') {
     savedText = typeof result.savedText === 'string' ? result.savedText : result.text;
     history = []; future = []; lastKind = ''; activeId = null;
+    imageCache.clear();
     beforeSelection = { a: 0, f: 0 };
     apply(result.text, { a: 0, f: 0 }, 'native', false);
     toast(action === 'restore' ? '本地文档已就绪' : action === 'new' ? '新的一页，开始落笔吧' : '已打开 ' + filename);
@@ -944,6 +1298,8 @@ function nativeCommand(action) {
   }
   if (action === 'undo' || action === 'redo') return undo(action === 'redo');
   if (['bold', 'italic', 'link'].includes(action)) return format(action);
+  if (action === 'exportHtml') return exportHTML();
+  if (action === 'exportPdf') return exportPDF();
   if (action === 'find' || action === 'replace') { openFind(); if (action === 'replace') $('replace-input').focus(); return; }
   const ids = {source:'source-toggle',focus:'focus-toggle',theme:'theme-toggle',outline:'sidebar-toggle',help:'help-toggle'};
   if (ids[action]) $(ids[action]).click();
@@ -954,9 +1310,9 @@ if (desktop) {
   $('save').title = '保存到原文件 Ctrl+S；另存为 Ctrl+Shift+S';
   $('rename').title = '另存为新名称';
   $('dirty').setAttribute('aria-label', '尚未保存的修改');
-  document.querySelector('.edition').innerHTML = 'WINDOWS DESKTOP <span>05</span>';
-  document.querySelector('.mvp').textContent = 'Windows v0.5';
-  $('help').innerHTML = '<strong>墨页 Windows · 文字留在你的电脑。</strong> Ctrl+N 新建，Ctrl+O 打开，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为；Ctrl+F 查找，Ctrl+H 替换，Ctrl+B / I 格式，Ctrl+K 链接，Ctrl+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做；Ctrl+/ 源码视图，F8 专注，F11 全屏，Esc 退出专注。<br><small>支持表格与对齐、分割线、多级列表、任务、安全 HTML、转义字符与本地 KaTeX 数学排版。代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。脚注 [^标签] 与链接引用 [文字][标签] 可用，定义写在顶层行；点击角标跳到定义。点击复杂块编辑原文，离开后预览；Tab / Shift+Tab 缩进列表或移动表格单元格。Ctrl+点击链接在系统浏览器打开。纯离线，无云端上传；恢复草稿不代替保存文件。打开 UTF-8 / UTF-8 BOM 的 .md / .markdown / .txt（不超过 10 MB）；保留原换行方式。GBK 等编码请先转为 UTF-8。支持 Windows 10/11 64 位；真实中文输入法仍需设备验证。不含图片与完整 CommonMark。<span>开源组件许可见安装目录 THIRD-PARTY-NOTICES.txt。</span></small>';
+  document.querySelector('.edition').innerHTML = 'WINDOWS DESKTOP <span>07</span>';
+  document.querySelector('.mvp').textContent = 'Windows v0.7';
+  $('help').innerHTML = '<strong>墨页 Windows · 文字留在你的电脑。</strong> Ctrl+N 新建，Ctrl+O 打开，Ctrl+S 保存到原文件，Ctrl+Shift+S 另存为；Ctrl+F 查找，Ctrl+H 替换，Ctrl+B / I 格式，Ctrl+K 链接，Ctrl+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做；Ctrl+/ 源码视图，F8 专注，F11 全屏，Esc 退出专注。<br><small>支持表格与对齐、分割线、多级列表、任务、安全 HTML、转义字符与本地 KaTeX 数学排版。代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。脚注 [^标签] 与链接引用 [文字][标签] 可用，定义写在顶层行；点击角标跳到定义。点击复杂块编辑原文，离开后预览；Tab / Shift+Tab 缩进列表或移动表格单元格。Ctrl+点击链接在系统浏览器打开。截图可直接粘贴或拖入编辑器，自动保存为文档目录内的图片文件并插入相对路径（png / jpg / gif / webp 等常见格式，单张不超过 5 MB）。图片 ![说明](相对路径) 显示为占位卡片，保存文档后可读取同目录图片；网络图片（仅 https）点击后加载。「文件」菜单的「导出 HTML」生成离线单文件，内嵌公式与已加载的图片；「导出 PDF」用同一离线管线生成打印版式 PDF。纯离线，无云端上传；恢复草稿不代替保存文件。打开 UTF-8 / UTF-8 BOM 的 .md / .markdown / .txt（不超过 10 MB）；保留原换行方式。GBK 等编码请先转为 UTF-8。支持 Windows 10/11 64 位；真实中文输入法仍需设备验证。非完整 CommonMark。<span>开源组件许可见安装目录 THIRD-PARTY-NOTICES.txt。</span></small>';
   desktop.onCommand(nativeCommand);
   await runDesktop('restore');
   desktopReady = true;
@@ -966,5 +1322,5 @@ if (desktop) {
 installMobileUI();
 if (isAndroid) {
   document.querySelector('#name-dialog p').textContent = '名称用于导出新文件，不会覆盖导入的原文件。';
-  $('help').innerHTML = '<strong>墨页 Android · 文字留在此设备。</strong> 点按段落编辑，横向滑动工具栏使用格式；点左上角「墨」打开大纲。导入 UTF-8 的 .md / .markdown / .txt（不超过 2 MB），导出通过系统文件选择器保存新文件，不覆盖导入原件。<br><small>草稿自动保存在应用内，切到后台时立即保留；清除应用数据或卸载会删除草稿，请定期导出。中文输入法选词期间不重排编辑区，完成选词后可格式化、导入导出。真实设备的不同输入法仍需验证。内容不上传云端。<a href="vendor/licenses.txt" target="_blank" rel="noopener">开源组件许可</a></small>';
+  $('help').innerHTML = '<strong>墨页 Android · 文字留在此设备。</strong> 点按段落编辑，横向滑动工具栏使用格式；点左上角「墨」打开大纲。导入 UTF-8 的 .md / .markdown / .txt（不超过 2 MB），导出通过系统文件选择器保存新文件，不覆盖导入原件；工具栏「导出 HTML」生成离线单文件。<br><small>草稿自动保存在应用内，切到后台时立即保留；清除应用数据或卸载会删除草稿，请定期导出。中文输入法选词期间不重排编辑区，完成选词后可格式化、导入导出。真实设备的不同输入法仍需验证。截图粘贴会以 data URL 内嵌进文档（单张不超过 2 MB）；网络图片（仅 https）点击后加载。内容不上传云端。<a href="vendor/licenses.txt" target="_blank" rel="noopener">开源组件许可</a></small>';
 }

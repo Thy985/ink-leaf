@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="theme-color" content="#f6f5f1"><meta name="description" content="墨页，一个安静的本地优先 Markdown 编辑器。即写即见，文字留在你的浏览器。">
 <title>墨页 · 把思绪写成一页</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='8' fill='%23526b52'/%3E%3Ctext x='20' y='28' text-anchor='middle' font-size='27' fill='white'%3E墨%3C/text%3E%3C/svg%3E">
@@ -21,7 +21,7 @@
 <aside class="sidebar" aria-label="文档大纲侧栏">
 <div class="sidebar-heading">文档大纲 <span>OUTLINE</span></div>
 <nav id="outline" aria-label="文档大纲"></nav>
-<div class="sidebar-note"><span class="tiny-rule"></span><strong>只管落笔。</strong><p>语法在编辑时浮现，<br>离开后，让文字自己说话。</p><span class="local-label">本地草稿 · 无云端上传</span><div class="edition">WEB PREVIEW <span>05</span></div></div>
+<div class="sidebar-note"><span class="tiny-rule"></span><strong>只管落笔。</strong><p>语法在编辑时浮现，<br>离开后，让文字自己说话。</p><span class="local-label">本地草稿 · 无云端上传</span><div class="edition">WEB PREVIEW <span>07</span></div></div>
 </aside>
 <main class="main">
 <div class="toolbar" role="toolbar" aria-label="Markdown 格式">
@@ -32,19 +32,19 @@
 <div class="toolbar-group touch-indent"><button data-command="outdent" title="减少缩进" aria-label="减少缩进">⇤</button><button data-command="indent" title="增加缩进或下一个表格单元格" aria-label="增加缩进或下一个表格单元格">⇥</button></div>
 <div class="toolbar-group insert-tools"><button data-command="table" title="插入表格">表格</button><button data-command="hr" title="插入分割线">—</button><button data-command="math" title="插入块公式">公式</button><button data-command="html" title="插入安全 HTML">HTML</button></div>
 </div>
-<div class="toolbar-end"><button id="focus-toggle" title="沉浸写作：隐藏工具与状态栏，可点击退出沉浸或按 Esc 返回" aria-pressed="false">沉浸写作</button><button id="find-toggle" title="查找替换 Ctrl/⌘ F" aria-expanded="false">查找</button><button id="source-toggle" aria-pressed="false" title="切换源码视图">源文</button><button id="theme-toggle" title="切换深浅色" aria-label="切换深浅色" aria-pressed="false">◐</button><button id="help-toggle" title="使用说明" aria-label="使用说明" aria-expanded="false">?</button></div>
+<div class="toolbar-end"><button id="focus-toggle" title="沉浸写作：隐藏工具与状态栏，可点击退出沉浸或按 Esc 返回" aria-pressed="false">沉浸写作</button><button id="find-toggle" title="查找替换 Ctrl/⌘ F" aria-expanded="false">查找</button><button id="source-toggle" aria-pressed="false" title="切换源码视图">源文</button><button id="export-html" title="导出为离线 HTML 文件（内嵌公式与已加载图片）；PDF 导出在桌面版「文件」菜单">导出 HTML</button><button id="theme-toggle" title="切换深浅色" aria-label="切换深浅色" aria-pressed="false">◐</button><button id="help-toggle" title="使用说明" aria-label="使用说明" aria-expanded="false">?</button></div>
 </div>
 <section class="find-panel" id="find-panel" aria-label="查找与替换" hidden>
 <div class="find-row"><input id="find-input" type="search" placeholder="查找文字…" aria-label="查找文字" autocomplete="off"><span id="find-count" role="status">0 / 0</span><button id="find-prev" title="上一个 Shift+Enter" aria-label="上一个匹配">↑</button><button id="find-next" title="下一个 Enter" aria-label="下一个匹配">↓</button><label class="case-label"><input type="checkbox" id="find-case">区分大小写</label><button id="find-close" aria-label="关闭查找">×</button></div>
 <div class="find-row"><input id="replace-input" placeholder="替换为…" aria-label="替换文字" autocomplete="off"><button id="replace-one">替换</button><button id="replace-all">全部替换</button><small>在 Markdown 原文中匹配</small></div>
 </section>
-<section class="help" id="help" hidden><strong>让想法流动，让语法退后。</strong> 点击段落显示语法；Enter 换段，列表 / 引用 / 任务自动续行，空项 Enter 退出；Shift+Enter 软换行。点击任务框切换完成状态；Ctrl/⌘ + 点击链接打开。Ctrl/⌘ F 查找，K 插入链接，B / I 格式，Z / Shift+Z 撤销重做，O 打开，S 下载。<br><small>草稿只在当前浏览器与此网址内自动保存，不能跨设备同步。保存 .md 是下载新文件，不会覆盖原文件。新增表格、分割线、多级列表、反斜杠转义、安全 HTML 与 KaTeX 公式。点击复杂块编辑原文，离开后预览；列表用 Tab / Shift+Tab 缩进与退级，空项 Enter 逐级退出；表格中 Tab / Shift+Tab 移动，Enter 续行。支持 $…$、\(…\)、$$…$$ 与 \[…\]。HTML 不执行脚本，移除样式、表单及嵌入媒体；代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。脚注 <code>[^标签]</code> 与链接引用 <code>[文字][标签]</code> 可用，定义写在顶层行；点击角标跳到定义，点击回链跳回正文。不支持任意网页嵌入与图片，亦非完整 Typora / CommonMark。输入法需在真实设备上继续验证。<a href="vendor/licenses.txt" target="_blank" rel="noopener">开源组件许可</a></small></section>
+<section class="help" id="help" hidden><strong>让想法流动，让语法退后。</strong> 点击段落显示语法；Enter 换段，列表 / 引用 / 任务自动续行，空项 Enter 退出；Shift+Enter 软换行。点击任务框切换完成状态；Ctrl/⌘ + 点击链接打开。Ctrl/⌘ F 查找，K 插入链接，B / I 格式，Z / Shift+Z 撤销重做，O 打开，S 保存，Shift+S 另存。<br><small>草稿只在当前浏览器与此网址内自动保存，不能跨设备同步。Chrome/Edge 中「保存」经系统选择器写回所选文件，其他浏览器下载新文件。图片 <code>![说明](路径)</code> 显示为占位卡片：网络图片（仅 https）需点击加载，本地图片在桌面版保存文档后显示；粘贴截图会以 data URL 内嵌进文档（单张不超过 2 MB）。「导出 HTML」生成离线单文件，内嵌公式与已加载的图片；PDF 导出仅在桌面版提供。新增表格、分割线、多级列表、反斜杠转义、安全 HTML 与 KaTeX 公式。点击复杂块编辑原文，离开后预览；列表用 Tab / Shift+Tab 缩进与退级，空项 Enter 逐级退出；表格中 Tab / Shift+Tab 移动，Enter 续行。支持 $…$、\(…\)、$$…$$ 与 \[…\]。HTML 不执行脚本，移除样式、表单及嵌入媒体；代码块支持离线语法高亮；Setext 标题、缩进代码块与裸 URL 也可用。脚注 <code>[^标签]</code> 与链接引用 <code>[文字][标签]</code> 可用，定义写在顶层行；点击角标跳到定义，点击回链跳回正文。不支持任意网页嵌入，亦非完整 Typora / CommonMark。输入法需在真实设备上继续验证。<a href="vendor/licenses.txt" target="_blank" rel="noopener">开源组件许可</a></small></section>
 <div class="paper-scroll" id="paper-scroll"><div class="paper-label"><span>一页，一念。</span><span>MARKDOWN / LIVE EDITOR</span></div>
 <article id="editor" contenteditable="true" spellcheck="false" autocapitalize="off" autocorrect="off" role="textbox" aria-label="Markdown 编辑区" aria-multiline="true"></article>
 <textarea id="source" aria-label="Markdown 源码" spellcheck="false" autocapitalize="off" autocorrect="off" hidden></textarea>
 <div class="page-end"><span></span><i>文字的空间，也是思考的空间。</i><span></span></div>
 </div>
-<footer><div><span class="status-dot"></span><span id="status" aria-live="polite">草稿已就绪</span></div><div><span id="wordcount">0 字符</span><span id="readtime">约 1 分钟</span><span id="blockcount">0 块</span><span class="mvp">预览 v0.5</span></div></footer>
+<footer><div><span class="status-dot"></span><span id="status" aria-live="polite">草稿已就绪</span></div><div><span id="wordcount">0 字符</span><span id="readtime">约 1 分钟</span><span id="blockcount">0 块</span><span class="mvp">预览 v0.7</span></div></footer>
 </main>
 </div>
 <button id="exit-focus" hidden title="退出沉浸写作（也可按 Esc 或安卓返回键）">退出沉浸 <kbd>Esc</kbd></button>

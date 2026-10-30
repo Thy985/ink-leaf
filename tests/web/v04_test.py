@@ -188,6 +188,8 @@ with sync_playwright() as playwright:
         assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
         assert markdown(page) == raw
         page.locator("#editor .heading").nth(0).click()
+        # Block activation applies asynchronously; give it a beat before asserting visibility.
+        page.wait_for_timeout(80)
         assert page.locator("#editor .heading .setext-underline").nth(0).is_visible()
         cases.append("Setext 标题显示、大纲与下划线激活")
         print("PASS", cases[-1], flush=True)

@@ -9,6 +9,7 @@ const OUT=path.join(ROOT,'test-results');
 const cases=[];
 const ok=(s)=>{cases.push(s);console.log('PASS',s);};
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
+async function waitFile(p,ms=10000){const t0=Date.now();while(Date.now()-t0<ms){try{const s=await fs.stat(p);if(s.size>0)return s;}catch{}await delay(150);}throw new Error('file not written: '+p);}
 (async()=>{
  await fs.mkdir(OUT,{recursive:true});
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'inkstone-e2e-'));
@@ -36,7 +37,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
  async function assertMD(s){await page.waitForFunction(s=>window.inkstone.getMarkdown()===s,s);assert.equal(await md(),s);}
  try{
   await launch();
-  assert((await md()).includes('Windows v0.5'));
+  assert((await md()).includes('Windows v0.7'));
   assert.equal(await page.evaluate(()=>typeof require),'undefined');
   assert.equal(await page.evaluate(()=>typeof process),'undefined');
   const prefs=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
@@ -67,6 +68,63 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
   assert.equal(await page.locator('#editor sup.fn-ref a[href="#ink-fn-1"]').count(),1);
   assert.equal(await page.locator('#editor .footnote-def').count(),1);
   assert.equal(await page.locator('#editor .paragraph a[href="https://example.com/docs"]').count(),1);ok('复杂 Markdown 桌面实时预览与原文无损');
+  // v0.6: local images resolve through the desktop bridge against the saved document's folder.
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=','base64');
+  await fs.writeFile(path.join(fixtures,'猫.png'),png);
+  await fs.writeFile(path.join(fixtures,'外部.png'),png);
+  await fs.mkdir(path.join(fixtures,'子'));await fs.writeFile(path.join(fixtures,'子','深入.png'),png);
+  const imageDoc='# 图集\n\n正文 $E=mc^2$。\n\n![猫](猫.png)\n\n![越界](../外部.png)\n\n![不存在](ghost.png)\n\n![子目录](子/深入.png)\n';
+  await edit(imageDoc);await page.locator('#source-toggle').click();await page.locator('#status').click();
+  await page.waitForSelector('#editor .ink-image-ready img');
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('#editor .ink-image-ready').count(),2);
+  assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),1);
+  assert.equal(await page.locator('#editor .ink-image[data-ink-state="error"]').count(),2);
+  assert((await page.locator('#editor .ink-image-error .ink-image-note').first().textContent()).includes('文档目录内'));
+  assert((await page.locator('#editor .ink-image-error .ink-image-note').nth(1).textContent()).includes('找不到'));
+  await assertMD(imageDoc);ok('本地图片经桥接读取，越界与缺失被拒绝');
+  const exported=path.join(fixtures,'导出.html');
+  await queue('save',{canceled:false,filePath:exported});
+  await cmd('exportHtml');
+  await page.waitForTimeout(400);
+  const html=await fs.readFile(exported,'utf8');
+  assert(html.startsWith('<!doctype html>'));
+  assert(html.includes('<title>图集</title>'));
+  assert(html.includes('<math'), 'formulas export as MathML');
+  assert(html.includes('data:image/png;base64,'),'cached local images embed as data URLs');
+  assert(html.includes('ink-export-missing'),'unresolved images stay visible placeholders');
+  ok('菜单导出 HTML 生成离线单文件');
+  // v0.7: pasting a screenshot writes it beside the saved document and renders it.
+  await page.locator('#editor .rich-block').first().click();
+  await page.evaluate((bytes) => {
+    const bin = atob(bytes);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const file = new File([arr], 'shot.png', { type: 'image/png' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'clipboardData', { value: dt });
+    document.getElementById('editor').dispatchEvent(ev);
+  }, png.toString('base64'));
+  await delay(400);
+  const inserted = (await fs.readdir(fixtures)).find((n) => /^粘贴图片-\d{8}-\d{6}(-\d+)?\.png$/.test(n));
+  assert(inserted, 'clipboard image written beside the document');
+  assert.equal((await fs.readFile(path.join(fixtures, inserted))).subarray(1, 4).toString('latin1'), 'PNG');
+  assert((await md()).includes(`![粘贴图片](${inserted})`), 'markdown gains a relative image reference');
+  await page.locator('#status').click();
+  await page.waitForSelector('#editor .ink-image-ready img');
+  ok('截图粘贴落盘到文档目录并显示');
+  // v0.7: exporting PDF reuses the offline HTML pipeline and writes real PDF bytes.
+  const exportedPdf = path.join(fixtures, '导出.pdf');
+  await queue('save', {canceled:false, filePath: exportedPdf});
+  await cmd('exportPdf');
+  await waitFile(exportedPdf).catch(async (error) => {
+    throw new Error(error.message + ' | toast: ' + await page.locator('#toast').textContent());
+  });
+  const pdfBytes = await fs.readFile(exportedPdf);
+  assert.equal(pdfBytes.subarray(0, 5).toString('latin1'), '%PDF-');
+  ok('菜单导出 PDF 生成公式内嵌的离线 PDF');
   await edit('<div onclick="window.BAD=1"><script>window.BAD=1</script><iframe src="https://bad.invalid"></iframe><a href="javascript:alert(1)">bad</a><p>safe</p></div>');await page.locator('#source-toggle').click();await page.locator('#status').click();
   assert.equal(await page.evaluate(()=>Boolean(window.BAD)),false);assert.equal(await page.locator('.block-preview script,.block-preview iframe,.block-preview [onclick]').count(),0);ok('HTML 脚本、事件、嵌入与危险链接过滤');
   await edit('alpha alpha');await cmd('find');await page.locator('#find-input').fill('alpha');assert.equal(await page.locator('#find-count').textContent(),'1 / 2');await page.locator('#replace-input').fill('beta');await page.locator('#replace-all').click();await assertMD('beta beta');await page.locator('#find-close').click();await cmd('undo');await assertMD('alpha alpha');await cmd('redo');await assertMD('beta beta');ok('原生菜单查找替换、撤销与重做');
