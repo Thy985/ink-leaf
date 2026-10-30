@@ -157,6 +157,28 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('图片内容与类型不一致'));
   await assertMD('# 修改后\n本地内容\n');
   ok('超大与伪装图片粘贴给出明确拒绝文案');
+  // v0.8: IME composition suppresses image paste and recovers cleanly (A1, desktop side).
+  await edit('# 组合\n\n段落\n');await page.locator('#source-toggle').click();
+  await page.evaluate(()=>{
+    const editor=document.getElementById('editor');
+    const el=[...editor.children].find((c)=>c.textContent.includes('段落'));
+    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+    let last=null,n;while((n=walker.nextNode()))last=n;
+    editor.focus();
+    const r=document.createRange();r.selectNodeContents(last);r.collapse(false);
+    const sel=getSelection();sel.removeAllRanges();sel.addRange(r);
+  });
+  await page.evaluate(()=>document.getElementById('editor').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})));
+  await pasteImages([{b64:png.toString('base64')}]);
+  await delay(400);
+  assert.equal((await fs.readdir(fixtures)).filter((n)=>/^粘贴图片-/.test(n)).length,3,'paste during composition writes nothing');
+  await assertMD('# 组合\n\n段落\n');
+  await page.evaluate(()=>document.getElementById('editor').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));
+  await delay(50);
+  await page.keyboard.insertText('中文输入测试');
+  await page.locator('#status').click();
+  await assertMD('# 组合\n\n段落中文输入测试\n');
+  ok('组合输入中粘贴被忽略，结束后中文正常落文');
   // v0.8: exports embed local images even when the editor never loaded them (C1) —
   // the image failed at open time, the file is added afterwards, and the export
   // reads it through the bridge without touching the editor's failed cards.
