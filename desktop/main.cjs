@@ -1,12 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const files = require('./files.cjs');
+const updates = require('./update.cjs');
 
 const MAX_TEXT = files.MAX_BYTES;
 const ENTRY = path.resolve(__dirname, '../web/index.html');
@@ -142,7 +143,7 @@ function menuTemplate() {
     { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
     { label: '编辑', submenu: [item('撤销', 'undo', 'CommandOrControl+Z'), item('重做', 'redo', 'CommandOrControl+Y'), item('重做（备用）', 'redo', 'CommandOrControl+Shift+Z'), { type: 'separator' }, {role:'cut',label:'剪切'}, {role:'copy',label:'复制'}, {role:'paste',label:'粘贴'}, {role:'selectAll',label:'全选'}, { type: 'separator' }, item('粗体', 'bold', 'CommandOrControl+B'), item('斜体', 'italic', 'CommandOrControl+I'), item('链接', 'link', 'CommandOrControl+K'), item('查找', 'find', 'CommandOrControl+F'), item('替换', 'replace', 'CommandOrControl+H')] },
     { label: '视图', submenu: [item('源文', 'source', 'CommandOrControl+/'), item('专注', 'focus', 'F8'), item('主题', 'theme'), item('大纲', 'outline'), item('全屏', 'fullscreen', 'F11')] },
-    { label: '帮助', submenu: [item('使用说明', 'help')] }
+    { label: '帮助', submenu: [item('使用说明', 'help'), { type: 'separator' }, { label: '检查更新', id: 'check-updates', click: () => { updates.checkUpdates({ net, app, dialog, shell, win }).catch(() => {}); } }] }
   ];
 }
 function createWindow() {

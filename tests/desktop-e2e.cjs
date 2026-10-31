@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const zlib = require('node:zlib');
+const http = require('node:http');
 const assert = require('node:assert/strict');
 const ROOT=path.resolve(__dirname,'..');
 const OUT=path.join(ROOT,'test-results');
@@ -20,17 +21,25 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'inkstone-e2e-'));
  const user=path.join(temp,'userdata');
  const fixtures=path.join(temp,'files');await fs.mkdir(fixtures);
+ // Stub GitHub Releases endpoint so the update check never leaves the machine.
+ const releaseServer=http.createServer((req,res)=>{
+  const releases={'/v99':{tag_name:'v99.0.0',html_url:'https://example.com/ink-leaf/releases/tag/v99.0.0'},'/same':{tag_name:'v0.9.0',html_url:'https://example.com/ink-leaf/releases/tag/v0.9.0'}};
+  res.writeHead(req.url==='/error'?500:200,{'content-type':'application/json'});
+  res.end(JSON.stringify(releases[req.url]||{}));
+ });
+ const releaseBase=await new Promise(r=>releaseServer.listen(0,'127.0.0.1',()=>r(`http://127.0.0.1:${releaseServer.address().port}`)));
  let app,page; const errors=[];
  async function launch(){
   app=await electron.launch({args:['--no-sandbox',ROOT],env:{...process.env,INKSTONE_USER_DATA:user},timeout:30000});
   page=await app.firstWindow(); page.on('pageerror',e=>errors.push(String(e)));
   await page.waitForFunction(()=>Boolean(window.desktop && window.inkstone));
   await page.waitForTimeout(350);
-  await app.evaluate(({dialog})=>{
-   globalThis.__testDialogs={open:[],save:[],message:[]};
+  await app.evaluate(({dialog,shell})=>{
+   globalThis.__testDialogs={open:[],save:[],message:[],messageLog:[],external:[]};
    dialog.showOpenDialog=async()=>globalThis.__testDialogs.open.shift()||{canceled:true,filePaths:[]};
    dialog.showSaveDialog=async()=>globalThis.__testDialogs.save.shift()||{canceled:true};
-   dialog.showMessageBox=async()=>({response:globalThis.__testDialogs.message.shift()??2});
+   dialog.showMessageBox=async(...args)=>{globalThis.__testDialogs.messageLog.push(args);return{response:globalThis.__testDialogs.message.shift()??2};};
+   shell.openExternal=async(url)=>{globalThis.__testDialogs.external.push(url);};
   });
  }
  async function queue(kind,result){await app.evaluate((_,{kind,result})=>globalThis.__testDialogs[kind].push(result),{kind,result});}
@@ -43,7 +52,7 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
  async function pasteImages(specs){await page.evaluate((specs)=>{const dt=new DataTransfer();for(const s of specs){let arr;if(s.b64){const bin=atob(s.b64);arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);}else arr=new Uint8Array(s.zeros);dt.items.add(new File([arr],'shot.png',{type:'image/png'}));}const ev=new ClipboardEvent('paste',{bubbles:true,cancelable:true});Object.defineProperty(ev,'clipboardData',{value:dt});document.getElementById('editor').dispatchEvent(ev);},specs);}
  try{
   await launch();
-  assert((await md()).includes('Windows v0.8'));
+  assert((await md()).includes('Windows v0.9'));
   assert.equal(await page.evaluate(()=>typeof require),'undefined');
   assert.equal(await page.evaluate(()=>typeof process),'undefined');
   const prefs=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
@@ -55,6 +64,20 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
    const entries=Menu.getApplicationMenu().items.flatMap(i=>i.submenu?.items||[]);
    for(const accelerator of ['CommandOrControl+N','CommandOrControl+O','CommandOrControl+S','CommandOrControl+Shift+S','CommandOrControl+K'])if(!entries.some(i=>i.accelerator===accelerator))throw Error('Missing accelerator '+accelerator);
   });ok('Windows 原生菜单与文件/格式快捷键注册');
+  // v0.9: the help menu checks GitHub Releases through the stubbed endpoint.
+  const clickUpdates=()=>app.evaluate(({Menu})=>Menu.getApplicationMenu().getMenuItemById('check-updates').click());
+  const lastMessage=()=>app.evaluate(()=>{const log=globalThis.__testDialogs.messageLog;return log.length?{title:log[log.length-1][1].title,message:log[log.length-1][1].message}:null;});
+  await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/v99';},releaseBase);
+  await queue('message',0);await clickUpdates();await delay(400);
+  const newer=await lastMessage();assert.equal(newer.title,'发现新版本');assert(newer.message.includes('99.0.0'),newer.message);
+  assert.deepEqual(await app.evaluate(()=>globalThis.__testDialogs.external),['https://example.com/ink-leaf/releases/tag/v99.0.0']);
+  await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/same';},releaseBase);
+  await clickUpdates();await delay(400);
+  assert((await lastMessage()).message.includes('已是最新版本'));
+  await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/error';},releaseBase);
+  await clickUpdates();await delay(400);
+  assert.equal((await lastMessage()).title,'检查更新失败');
+  ok('帮助菜单检查更新：发现新版本/已是最新/失败提示');
   const first=path.join(fixtures,'原稿.md');await fs.writeFile(first,'\ufeff# 本地文档\r\n正文\r\n');
   await open(first);await assertMD('# 本地文档\n正文\n');ok('原生打开对话框与中文文件名读取');
   await edit('# 修改后\n本地内容\n');await page.keyboard.press('Control+s');await delay(250);
@@ -242,5 +265,5 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   const result={passed:cases.length,cases,errors,platform:process.platform,note:'Electron Linux runtime integration test; Windows x64 artifacts are cross-built. Native Windows IME and installer smoke tests remain.'};
   await fs.writeFile(path.join(OUT,'desktop-e2e.json'),JSON.stringify(result,null,2));console.log('ALL PASS',cases.length);
  }catch(error){await fs.writeFile(path.join(OUT,'desktop-e2e-failure.txt'),String(error.stack));if(page&&!page.isClosed())await page.screenshot({path:path.join(OUT,'failure.png')});throw error;}
- finally{if(app)try{app.process().kill('SIGKILL');}catch{}}
+ finally{if(app)try{app.process().kill('SIGKILL');}catch{}releaseServer.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

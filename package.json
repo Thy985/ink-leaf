@@ -1,6 +1,6 @@
 {
   "name": "inkstone-desktop",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "墨页 — 安静、本地优先的 Markdown 编辑器",
   "author": "Inkstone",
   "private": true,
@@ -11,7 +11,7 @@
     "start": "npm run build:web && electron .",
     "start:web": "npm run build:web && python3 -m http.server 4173 --bind 127.0.0.1 --directory web",
     "test": "node --test web/model.test.js tests/*.test.cjs",
-    "check": "node --check desktop/main.cjs && node --check desktop/files.cjs && node --check desktop/preload.cjs && node --check web/app.js && node --check web/model.js && node --check web/renderer.js && node --check scripts/build-web.mjs && node --check web/mobile.js && node --check scripts/sync-android.mjs",
+    "check": "node --check desktop/main.cjs && node --check desktop/files.cjs && node --check desktop/preload.cjs && node --check desktop/update.cjs && node --check web/app.js && node --check web/model.js && node --check web/renderer.js && node --check scripts/build-web.mjs && node --check web/mobile.js && node --check scripts/sync-android.mjs",
     "build:win": "npm run build:web && electron-builder --win nsis zip --x64",
     "build:linux:test": "npm run build:web && electron-builder --linux dir --x64",
     "test:desktop": "npm run build:web && node tests/desktop-e2e.cjs",
