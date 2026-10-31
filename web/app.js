@@ -1110,6 +1110,7 @@ function focusMode(on) {
 }
 $('focus-toggle').onclick = () => focusMode(!document.body.classList.contains('focus-mode'));
 $('exit-focus').onclick = () => focusMode(false);
+$('syntax-toggle').onclick = () => { if (!composing) $('syntax-dialog').showModal(); };
 for (const id of ['focus-toggle', 'exit-focus']) {
   $(id).addEventListener('pointerdown', event => event.preventDefault());
 }
@@ -1289,6 +1290,7 @@ $('replace-all').onclick = () => {
 };
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || event.isComposing) return;
+  if (document.querySelector('dialog[open]')) return; // the dialog closes itself
   if (!$('find-panel').hidden) { closeFind(); event.preventDefault(); }
   focusMode(false);
   document.body.classList.remove('mobile-outline');
