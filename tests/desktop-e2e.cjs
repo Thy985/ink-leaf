@@ -43,7 +43,7 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
  async function pasteImages(specs){await page.evaluate((specs)=>{const dt=new DataTransfer();for(const s of specs){let arr;if(s.b64){const bin=atob(s.b64);arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);}else arr=new Uint8Array(s.zeros);dt.items.add(new File([arr],'shot.png',{type:'image/png'}));}const ev=new ClipboardEvent('paste',{bubbles:true,cancelable:true});Object.defineProperty(ev,'clipboardData',{value:dt});document.getElementById('editor').dispatchEvent(ev);},specs);}
  try{
   await launch();
-  assert((await md()).includes('Windows v0.7'));
+  assert((await md()).includes('Windows v0.8'));
   assert.equal(await page.evaluate(()=>typeof require),'undefined');
   assert.equal(await page.evaluate(()=>typeof process),'undefined');
   const prefs=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
