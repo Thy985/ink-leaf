@@ -1090,10 +1090,16 @@ function setTheme(dark) {
 }
 $('theme-toggle').onclick = () => setTheme(document.documentElement.dataset.theme !== 'dark');
 try { const theme = localStorage.getItem('inkstone.theme'); setTheme(theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches); } catch {}
+let outlinePinned = false;
+const sidebarEl = document.querySelector('.sidebar');
+const outlinePeek = $('outline-peek');
 function focusMode(on) {
   document.body.classList.toggle('focus-mode', on);
   $('exit-focus').hidden = !on;
   $('focus-toggle').setAttribute('aria-pressed', String(on));
+  outlinePinned = false;
+  document.body.classList.remove('outline-peek', 'outline-pinned');
+  outlinePeek.setAttribute('aria-pressed', 'false');
   if (on) {
     document.body.classList.remove('mobile-outline');
     $('sidebar-toggle').setAttribute('aria-expanded', 'false');
@@ -1111,7 +1117,23 @@ function focusMode(on) {
 $('focus-toggle').onclick = () => focusMode(!document.body.classList.contains('focus-mode'));
 $('exit-focus').onclick = () => focusMode(false);
 $('syntax-toggle').onclick = () => { if (!composing) $('syntax-dialog').showModal(); };
-for (const id of ['focus-toggle', 'exit-focus']) {
+// Focus-mode outline handle: hover reveals, leaving hides, click pins.
+outlinePeek.onmouseenter = () => { if (!outlinePinned) document.body.classList.add('outline-peek'); };
+outlinePeek.onclick = () => {
+  outlinePinned = !outlinePinned;
+  outlinePeek.setAttribute('aria-pressed', String(outlinePinned));
+  document.body.classList.toggle('outline-pinned', outlinePinned);
+  if (!outlinePinned && outlinePeek.matches(':hover')) document.body.classList.add('outline-peek');
+};
+const leaveOutline = (event) => {
+  if (outlinePinned) return;
+  const to = event.relatedTarget;
+  if (to && (to === outlinePeek || sidebarEl.contains(to))) return;
+  document.body.classList.remove('outline-peek');
+};
+outlinePeek.addEventListener('mouseleave', leaveOutline);
+sidebarEl.addEventListener('mouseleave', leaveOutline);
+for (const id of ['focus-toggle', 'exit-focus', 'outline-peek']) {
   $(id).addEventListener('pointerdown', event => event.preventDefault());
 }
 for (const id of ['undo', 'redo']) {

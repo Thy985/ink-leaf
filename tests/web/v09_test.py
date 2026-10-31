@@ -91,20 +91,35 @@ with sync_playwright() as playwright:
         cases.append("沉浸模式工具栏常驻，查找/帮助/语法可用且 Esc 语义正确")
         print("PASS", cases[-1], flush=True)
 
-        # --- the outline peeks in when the mouse touches the left edge ---
+        # --- the outline handle reveals the outline; click pins it open ---
         page.locator("#focus-toggle").click()
         page.wait_for_timeout(80)
         assert sidebar_transform(page) != "none", "outline starts hidden in focus mode"
-        page.mouse.move(9, 400)
+        assert page.locator("#outline-peek").is_visible(), "handle must be visible in focus mode"
+        handle_box = page.locator("#outline-peek").bounding_box()
+        assert handle_box["x"] == 0, handle_box
+        page.locator("#outline-peek").hover()
         page.wait_for_timeout(350)
-        assert sidebar_transform(page) == "none", "hovering the left edge must reveal the outline"
+        assert sidebar_transform(page) == "none", "hovering the handle must reveal the outline"
         assert page.locator(".sidebar").bounding_box()["x"] == 0
         page.mouse.move(720, 400)
         page.wait_for_timeout(350)
         assert sidebar_transform(page) != "none", "leaving the outline hides it again"
+        page.locator("#outline-peek").hover()
+        page.wait_for_timeout(350)
+        page.locator("#outline-peek").click()
+        assert page.locator("#outline-peek").get_attribute("aria-pressed") == "true"
+        page.mouse.move(720, 400)
+        page.wait_for_timeout(350)
+        assert sidebar_transform(page) == "none", "a pinned outline stays open"
+        page.locator("#outline-peek").click()
+        assert page.locator("#outline-peek").get_attribute("aria-pressed") == "false"
+        page.mouse.move(720, 400)
+        page.wait_for_timeout(350)
+        assert sidebar_transform(page) != "none", "unpinning lets the outline hide again"
         page.locator("#focus-toggle").click()
         assert not page.evaluate("document.body.classList.contains('focus-mode')")
-        cases.append("沉浸模式下大纲随鼠标移到左缘悬停显示，移开即收起")
+        cases.append("沉浸模式大纲把手：悬停呼出、移开收起、点击固定与解除")
         print("PASS", cases[-1], flush=True)
         page.close()
 
@@ -117,6 +132,7 @@ with sync_playwright() as playwright:
         assert mobile.evaluate("document.body.classList.contains('focus-mode')")
         assert not mobile.locator(".toolbar").is_visible(), "touch focus mode must keep the toolbar hidden"
         assert not mobile.locator(".sidebar").is_visible()
+        assert not mobile.locator("#outline-peek").is_visible(), "touch mode has no outline handle"
         mobile.locator("#exit-focus").click()
         context.close()
         cases.append("触屏端沉浸模式维持隐藏工具栏的原有行为")
