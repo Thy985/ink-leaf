@@ -1356,17 +1356,19 @@ function installNativeDocument(result, action) {
     toast(action === 'restore' ? '本地文档已就绪' : action === 'new' ? '新的一页，开始落笔吧' : '已打开 ' + filename);
   }
 }
-async function runDesktop(action) {
+async function runDesktop(action, params) {
   if (!desktop || desktopBusy) return;
   if (composing) { toast('请先完成输入法选词，再进行文件操作'); return; }
   desktopBusy = true;
   // Freeze edits during a file replacement to avoid losing text typed behind
   // native dialogs; save / saveAs may safely preserve edits made meanwhile.
-  const freeze = ['new', 'open', 'openPending', 'close', 'restore'].includes(action);
+  const freeze = ['new', 'open', 'openPending', 'close', 'restore', 'folderOpen', 'folderCreate'].includes(action);
   if (freeze) { editor.contentEditable = 'false'; source.readOnly = true; }
   try {
-    const result = await desktop.perform(action, desktopSnapshot());
+    const result = await desktop.perform(action, desktopSnapshot(), params);
     installNativeDocument(result, action);
+    if (result && result.session) applySession(result.session);
+    return result;
   } catch (error) {
     toast(error?.message || '文件操作失败，请重试');
     $('status').textContent = '文件操作失败 · 你的内容仍保留在编辑器中';
@@ -1378,6 +1380,7 @@ async function runDesktop(action) {
 function nativeCommand(action) {
   if (desktopBusy || composing) { if (composing) toast('请先完成输入法选词'); return; }
   if (['open', 'new', 'save', 'saveAs', 'close', 'openPending'].includes(action)) return runDesktop(action);
+  if (action === 'folderAdd') { switchPanel('folders'); $('folder-add').click(); return; }
   const field = document.activeElement;
   const inField = field instanceof HTMLInputElement || field?.closest('dialog');
   if (inField && ['undo', 'redo', 'bold', 'italic', 'link'].includes(action)) {
@@ -1392,6 +1395,9 @@ function nativeCommand(action) {
   const ids = {source:'source-toggle',focus:'focus-toggle',theme:'theme-toggle',outline:'sidebar-toggle',help:'help-toggle'};
   if (ids[action]) $(ids[action]).click();
 }
+// Declared before the desktop init block: applySession runs during restore above.
+let folderState = { folders: [], activeFolder: null, lastScan: null };
+let folderNameAction = null;
 if (desktop) {
   $('open').innerHTML = '打开 <kbd>Ctrl O</kbd>';
   $('save').innerHTML = '保存 <kbd>Ctrl S</kbd>';
@@ -1406,6 +1412,187 @@ if (desktop) {
   desktopReady = true;
   updateUI(); persist();
 }
+
+// --- Folder panel: read-only import of a local folder (desktop only). ---
+// Every filesystem operation goes through desktop.perform's allowlist; the renderer
+// only ever sees root-relative paths, names and reason strings.
+function folderLabel(p) { const parts = String(p).split(/[\\/]/).filter(Boolean); return parts.length > 1 ? parts[parts.length - 1] : String(p); }
+function activeFolderRel() {
+  if (!desktopPath || !folderState.activeFolder) return null;
+  const root = folderState.activeFolder.replace(/\\/g, '/').replace(/\/+$/, '');
+  const doc = desktopPath.replace(/\\/g, '/');
+  return doc.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? doc.slice(root.length + 1) : null;
+}
+function switchPanel(mode) {
+  const showFolders = mode === 'folders';
+  $('outline').hidden = showFolders;
+  $('folder-panel').hidden = !showFolders;
+  $('panel-outline').setAttribute('aria-pressed', String(!showFolders));
+  $('panel-folders').setAttribute('aria-pressed', String(showFolders));
+  if (showFolders && folderState.activeFolder && !folderState.lastScan) rescanFolder();
+}
+$('panel-outline').onclick = () => switchPanel('outline');
+$('panel-folders').onclick = () => { if (!desktop) { toast('文件夹导入仅在 Windows 桌面版提供'); return; } switchPanel('folders'); };
+function renderChips() {
+  const wrap = $('folder-chips');
+  wrap.replaceChildren();
+  wrap.hidden = !folderState.folders.length;
+  for (const folder of folderState.folders) {
+    const chip = document.createElement('div');
+    chip.className = 'folder-chip';
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.className = `chip-name${folder.path === folderState.activeFolder ? ' active' : ''}`;
+    name.textContent = folderLabel(folder.path);
+    name.title = folder.path;
+    name.onclick = () => setActiveFolder(folder.path);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'chip-remove';
+    remove.textContent = '×';
+    remove.title = '移除文件夹视图（不删除磁盘内容）';
+    remove.onclick = () => removeFolder(folder.path);
+    chip.append(name, remove);
+    wrap.append(chip);
+  }
+  const has = !!folderState.activeFolder;
+  $('folder-refresh').disabled = !has;
+  $('folder-new').disabled = !has;
+  $('folder-filter').hidden = !has;
+  $('folder-empty').hidden = !!folderState.folders.length;
+}
+function treeHint(message) { const p = document.createElement('p'); p.className = 'folder-hint'; p.textContent = message; return p; }
+function renderTree() {
+  const treeEl = $('folder-tree');
+  treeEl.replaceChildren();
+  const excludedWrap = $('folder-excluded');
+  const excludedList = $('folder-excluded-list');
+  excludedList.replaceChildren();
+  excludedWrap.hidden = true;
+  if (!folderState.activeFolder) { treeEl.append(treeHint('尚未选择文件夹。')); return; }
+  const scan = folderState.lastScan;
+  if (!scan) { treeEl.append(treeHint('正在扫描…')); return; }
+  const query = $('folder-filter').value.trim().toLowerCase();
+  const activeRel = activeFolderRel();
+  const matches = (doc) => !query || doc.name.toLowerCase().includes(query);
+  const subtreeHasMatch = (node) => node.docs.some(matches) || node.dirs.some(subtreeHasMatch);
+  const renderDir = (node, depth) => {
+    const docs = node.docs.filter(matches);
+    if (docs.length && node.path) {
+      const dir = document.createElement('div');
+      dir.className = 'folder-dir';
+      dir.textContent = node.name;
+      dir.style.paddingLeft = `${8 + depth * 12}px`;
+      treeEl.append(dir);
+    }
+    for (const d of docs) {
+      const row = document.createElement('div');
+      row.className = 'folder-doc';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `doc-name${d.path === activeRel ? ' active' : ''}`;
+      btn.textContent = d.name;
+      btn.title = d.path;
+      btn.style.paddingLeft = `${8 + depth * 12}px`;
+      btn.onclick = () => runDesktop('folderOpen', { folder: folderState.activeFolder, path: d.path });
+      const ren = document.createElement('button');
+      ren.type = 'button';
+      ren.className = 'doc-rename';
+      ren.textContent = '✎';
+      ren.title = '重命名';
+      ren.setAttribute('aria-label', `重命名 ${d.name}`);
+      ren.onclick = () => promptFolderName('rename', d.path, d.name);
+      row.append(btn, ren);
+      treeEl.append(row);
+    }
+    for (const child of node.dirs) if (!query || subtreeHasMatch(child)) renderDir(child, node.path ? depth + 1 : 0);
+  };
+  renderDir(scan.tree, 0);
+  if (!treeEl.children.length) treeEl.append(treeHint(query ? '没有匹配的文档。' : '文件夹里没有可查看的 Markdown 文档。'));
+  if (scan.excluded.length) {
+    excludedWrap.hidden = false;
+    const shown = scan.excluded.slice(0, 200);
+    for (const item of shown) {
+      const li = document.createElement('li');
+      const em = document.createElement('em');
+      em.textContent = ` ${item.reason}`;
+      li.textContent = item.path;
+      li.append(em);
+      excludedList.append(li);
+    }
+    if (scan.excluded.length > shown.length) { const li = document.createElement('li'); li.textContent = `其余 ${scan.excluded.length - shown.length} 项省略`; excludedList.append(li); }
+  }
+  if (scan.truncated) { const li = document.createElement('li'); li.textContent = '扫描条目过多，结果已截断（最多 6 层、2000 项、300 个文档）。'; excludedList.append(li); excludedWrap.hidden = false; }
+}
+async function setActiveFolder(folderPath) {
+  folderState.activeFolder = folderPath;
+  folderState.lastScan = null;
+  renderChips();
+  renderTree();
+  const result = await runDesktop('folderScan', { folder: folderPath });
+  if (result && result.tree && folderState.activeFolder === folderPath) { folderState.lastScan = result; renderTree(); }
+}
+function rescanFolder() { if (folderState.activeFolder) setActiveFolder(folderState.activeFolder); }
+async function removeFolder(folderPath) {
+  const result = await runDesktop('folderRemove', { folder: folderPath });
+  if (result && result.folders) {
+    folderState.folders = result.folders;
+    folderState.activeFolder = result.activeFolder || null;
+    folderState.lastScan = null;
+    renderChips();
+    renderTree();
+    if (folderState.activeFolder) rescanFolder();
+    toast('已移除文件夹视图，磁盘内容未改动');
+  }
+}
+function applySession(session) {
+  if (!desktop || !session) return;
+  folderState.folders = Array.isArray(session.folders) ? session.folders : [];
+  const active = session.activeFolder;
+  folderState.activeFolder = folderState.folders.some((f) => f.path === active) ? active : folderState.folders[0]?.path || null;
+  folderState.lastScan = null;
+  renderChips();
+  renderTree();
+  // Deferred so the initial restore's desktopBusy window has closed.
+  if (folderState.activeFolder) setTimeout(rescanFolder, 0);
+}
+function promptFolderName(mode, relPath, current) {
+  if (!folderState.activeFolder || desktopBusy) return;
+  folderNameAction = { mode, relPath };
+  $('folder-name-title').textContent = mode === 'create' ? '新建文档' : '重命名文档';
+  $('folder-name-input').value = current;
+  $('folder-name-dialog').returnValue = '';
+  $('folder-name-dialog').showModal();
+  $('folder-name-input').select();
+}
+$('folder-name-dialog').addEventListener('close', async () => {
+  if ($('folder-name-dialog').returnValue !== 'confirm' || !folderNameAction) return;
+  let name = $('folder-name-input').value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-');
+  const { mode, relPath } = folderNameAction;
+  folderNameAction = null;
+  if (!name) return;
+  if (!name.includes('.')) name += '.md';
+  if (mode === 'create') {
+    const result = await runDesktop('folderCreate', { folder: folderState.activeFolder, name });
+    if (result && !result.canceled) rescanFolder();
+  } else {
+    const result = await runDesktop('folderRename', { folder: folderState.activeFolder, path: relPath, name });
+    if (result && result.tree && result.folder === folderState.activeFolder) { folderState.lastScan = result; renderTree(); toast('已重命名'); }
+  }
+});
+$('folder-add').onclick = async () => {
+  const result = await runDesktop('folderAdd');
+  if (result && result.folders) {
+    folderState.folders = result.folders;
+    folderState.activeFolder = result.activeFolder || null;
+    folderState.lastScan = result.tree ? result : null;
+    renderChips();
+    renderTree();
+  }
+};
+$('folder-refresh').onclick = () => rescanFolder();
+$('folder-new').onclick = () => promptFolderName('create', null, '未命名.md');
+$('folder-filter').oninput = () => renderTree();
 
 installMobileUI();
 if (isAndroid) {

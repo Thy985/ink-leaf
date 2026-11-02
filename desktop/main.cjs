@@ -7,6 +7,7 @@ const fsp = fs.promises;
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const files = require('./files.cjs');
+const folders = require('./folders.cjs');
 const updates = require('./update.cjs');
 
 const MAX_TEXT = files.MAX_BYTES;
@@ -21,6 +22,7 @@ let recoveryQueue = Promise.resolve();
 let closing = false;
 let state = { text: '', filename: '未命名.md', dirty: false, savedText: '', composing: false, filepath: null };
 let opened = null; // { filepath, fingerprint, eol, bom }
+let sessionState = null; // { version, folders: [{ path, lastDoc, addedAt }], activeFolder, lastDoc }
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 function commandLinePath(commandLine) {
@@ -58,6 +60,62 @@ async function readRecovery() {
   } catch { return null; }
 }
 function resultFor(text, filename, filepath, savedText, dirty) { return { text, filename, filepath: filepath || null, savedText: savedText ?? text, ...(dirty === undefined ? {} : { dirty }) }; }
+
+// Session memory (打开状态记忆) remembers the last document and imported folders so the
+// next launch restores the previous view. It never stores document text — that stays in
+// recovery.json — and both files live in the same user-data directory.
+function sessionPath() { return path.join(userDataDir(), 'session.json'); }
+function sanitizeSession(data) {
+  const empty = { version: 1, folders: [], activeFolder: null, lastDoc: null };
+  if (!data || typeof data !== 'object') return empty;
+  const seen = new Set();
+  const folderList = [];
+  for (const entry of Array.isArray(data.folders) ? data.folders : []) {
+    const p = entry && typeof entry.path === 'string' ? entry.path : null;
+    if (!p || !path.isAbsolute(p) || seen.has(p)) continue;
+    seen.add(p);
+    folderList.push({
+      path: p,
+      lastDoc: typeof entry.lastDoc === 'string' && files.ALLOWED_EXTENSIONS.has(path.extname(entry.lastDoc).toLowerCase()) ? entry.lastDoc : null,
+      addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : new Date().toISOString(),
+    });
+  }
+  return {
+    version: 1,
+    folders: folderList,
+    activeFolder: typeof data.activeFolder === 'string' && seen.has(data.activeFolder) ? data.activeFolder : folderList[0]?.path || null,
+    lastDoc: typeof data.lastDoc === 'string' && files.ALLOWED_EXTENSIONS.has(path.extname(data.lastDoc).toLowerCase()) ? data.lastDoc : null,
+  };
+}
+async function readSession() {
+  try { return sanitizeSession(JSON.parse(await fsp.readFile(sessionPath(), 'utf8'))); }
+  catch { return sanitizeSession(null); }
+}
+// Writes are serialized through the recovery queue; every caller awaits the result, so
+// read-modify-write cycles never interleave.
+function updateSession(patch) {
+  return enqueueRecovery(async () => {
+    const next = sanitizeSession({ ...(await readSession()), ...patch });
+    await ensureDataDir();
+    const tmp = `${sessionPath()}.${process.pid}.${Date.now()}.tmp`;
+    try { await fsp.writeFile(tmp, JSON.stringify(next), { encoding: 'utf8', flag: 'wx', mode: 0o600 }); await fsp.rename(tmp, sessionPath()); }
+    catch (error) { try { await fsp.unlink(tmp); } catch {} throw error; }
+    return next;
+  });
+}
+function withinFolder(folderPath, filePath) {
+  const rel = path.relative(folderPath, filePath);
+  return !!rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+function publicFolders() { return sessionState.folders.map(({ path: p, lastDoc }) => ({ path: p, lastDoc })); }
+async function recordSessionDoc(filePath) {
+  if (!sessionState) sessionState = await readSession();
+  const patch = { lastDoc: filePath };
+  const folder = sessionState.folders.find((f) => withinFolder(f.path, filePath));
+  if (folder) { patch.activeFolder = folder.path; if (folder.lastDoc !== filePath) patch.folders = sessionState.folders.map((f) => f.path === folder.path ? { ...f, lastDoc: filePath } : f); }
+  if (patch.lastDoc === sessionState.lastDoc && patch.activeFolder === sessionState.activeFolder && !patch.folders) return;
+  sessionState = await updateSession(patch);
+}
 async function chooseDirty(snapshot, operation) {
   if (!snapshot.dirty) return 'discard';
   const answer = await dialog.showMessageBox(win, { type: 'warning', buttons: ['保存', '不保存', '取消'], defaultId: 0, cancelId: 2, noLink: true, title: '未保存的修改', message: operation === 'close' ? '文档有未保存的修改。' : '切换文档前要如何处理未保存的修改？' });
@@ -72,7 +130,19 @@ async function chooseConflict() {
 async function openPath(filePath) {
   const doc = await files.readDocument(filePath);
   opened = { filepath: filePath, fingerprint: doc.fingerprint, eol: doc.eol, bom: doc.bom };
+  await recordSessionDoc(filePath).catch(() => {});
   return resultFor(doc.text, doc.filename, filePath, doc.text, false);
+}
+// Shared by Ctrl+O and folder-panel opens: read first so a bad file never discards the
+// draft, then ask about unsaved changes, then commit.
+async function openCandidate(filePath, snapshot) {
+  const candidate = await files.readDocument(filePath);
+  const decision = await chooseDirty(snapshot, 'open');
+  if (decision === 'cancel') return { canceled: true };
+  opened = { filepath: candidate.filepath, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom };
+  await clearRecovery();
+  await recordSessionDoc(candidate.filepath).catch(() => {});
+  return adopt(resultFor(candidate.text, candidate.filename, candidate.filepath, candidate.text, false));
 }
 function adopt(r) { if (r && !r.canceled) state = { ...state, text: r.text, filename: r.filename, savedText: r.savedText ?? r.text, dirty: !!r.dirty, filepath: r.filepath || null }; return r; }
 async function savePath(snapshot, filePath, saveAs = false) {
@@ -87,6 +157,7 @@ async function savePath(snapshot, filePath, saveAs = false) {
   const written = await files.writeDocumentAtomic(filePath, snapshot.text, { eol: opened?.eol || 'lf', bom: opened?.bom || false });
   opened = { filepath: filePath, fingerprint: written.fingerprint, eol: opened?.eol || 'lf', bom: opened?.bom || false };
   await clearRecovery();
+  await recordSessionDoc(filePath).catch(() => {});
   state = { ...state, ...snapshot, savedText: snapshot.text, dirty: false, filepath: filePath };
   return resultFor(snapshot.text, path.basename(filePath), filePath, snapshot.text, false);
 }
@@ -97,27 +168,29 @@ async function saveAsPath(snapshot) {
   files.assertSupportedPath(picked.filePath);
   return savePath(snapshot, picked.filePath, true);
 }
-async function perform(action, rawSnapshot = state) {
+async function perform(action, rawSnapshot = state, params = null) {
   const snapshot = assertSnapshot(rawSnapshot);
   state = { ...state, ...snapshot };
-  const actions = new Set(['restore','openPending','open','new','save','saveAs','close']);
+  const actions = new Set(['restore','openPending','open','new','save','saveAs','close','folderAdd','folderScan','folderOpen','folderRename','folderCreate','folderRemove']);
   if (!actions.has(action)) throw new Error('未知桌面操作');
   if (snapshot.composing && action !== 'restore') throw new Error('正在输入，暂不能执行文件操作');
   if (action === 'restore') {
+    if (!sessionState) sessionState = await readSession();
+    const sessionInfo = () => ({ folders: publicFolders(), activeFolder: sessionState.activeFolder, lastDoc: sessionState.lastDoc });
     const recovery = await readRecovery();
-    if (recovery) { pendingAfterRestore = !!pendingPath; opened = recovery.filepath ? { filepath: recovery.filepath, fingerprint: recovery.fingerprint, eol: recovery.eol, bom: recovery.bom } : null; return adopt(resultFor(recovery.text, recovery.filename, recovery.filepath, recovery.savedText, true)); }
-    if (pendingPath) { const candidate = pendingPath; pendingPath = null; return adopt(await openPath(candidate)); }
-    return null;
+    if (recovery) { pendingAfterRestore = !!pendingPath; opened = recovery.filepath ? { filepath: recovery.filepath, fingerprint: recovery.fingerprint, eol: recovery.eol, bom: recovery.bom } : null; return adopt({ ...resultFor(recovery.text, recovery.filename, recovery.filepath, recovery.savedText, true), session: sessionInfo() }); }
+    if (pendingPath) { const candidate = pendingPath; pendingPath = null; return adopt({ ...(await openPath(candidate)), session: sessionInfo() }); }
+    if (sessionState.lastDoc) {
+      try { return { ...(await openPath(sessionState.lastDoc)), session: sessionInfo() }; }
+      catch { sessionState = await updateSession({ lastDoc: null }).catch(() => sessionState); }
+    }
+    return { session: sessionInfo() };
   }
-  if (action === 'openPending') { if (!pendingPath) return { canceled: true }; const p = pendingPath; const candidate = await files.readDocument(p); const decision = await chooseDirty(snapshot, 'open'); if (decision === 'cancel') { pendingPath = p; return { canceled: true }; } pendingPath = null; await clearRecovery(); opened = { filepath: p, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom }; return adopt(resultFor(candidate.text, candidate.filename, p, candidate.text, false)); }
+  if (action === 'openPending') { if (!pendingPath) return { canceled: true }; const p = pendingPath; const candidate = await files.readDocument(p); const decision = await chooseDirty(snapshot, 'open'); if (decision === 'cancel') { pendingPath = p; return { canceled: true }; } pendingPath = null; await clearRecovery(); opened = { filepath: p, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom }; await recordSessionDoc(p).catch(() => {}); return adopt(resultFor(candidate.text, candidate.filename, p, candidate.text, false)); }
   if (action === 'open') {
     const picked = await dialog.showOpenDialog(win, { title: '打开 Markdown', properties: ['openFile'], filters: [{ name: 'Markdown/文本', extensions: ['md', 'markdown', 'txt'] }] });
     if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
-    const candidate = await files.readDocument(picked.filePaths[0]); // 先读，失败不会丢弃草稿
-    const decision = await chooseDirty(snapshot, 'open');
-    if (decision === 'cancel') return { canceled: true };
-    opened = { filepath: candidate.filepath, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom };
-    await clearRecovery(); return adopt(resultFor(candidate.text, candidate.filename, candidate.filepath, candidate.text, false));
+    return openCandidate(picked.filePaths[0], snapshot);
   }
   if (action === 'new') {
     const decision = await chooseDirty(snapshot, 'new'); if (decision === 'cancel') return { canceled: true };
@@ -134,13 +207,78 @@ async function perform(action, rawSnapshot = state) {
     clearTimeout(draftTimer); draftTimer = null; ++draftVersion; state = { ...state, dirty: false }; closing = true; if (win && !win.isDestroyed()) win.destroy();
     return { closed: true };
   }
+  if (action === 'folderAdd') {
+    if (!sessionState) sessionState = await readSession();
+    const picked = await dialog.showOpenDialog(win, { title: '导入文件夹', properties: ['openDirectory'] });
+    if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
+    const folderPath = picked.filePaths[0];
+    const scan = await scanRegistered(folderPath);
+    if (!sessionState.folders.some((f) => f.path === folderPath)) sessionState = await updateSession({ folders: [...sessionState.folders, { path: folderPath, lastDoc: null, addedAt: new Date().toISOString() }], activeFolder: folderPath });
+    else sessionState = await updateSession({ activeFolder: folderPath });
+    return { folders: publicFolders(), activeFolder: sessionState.activeFolder, ...scan };
+  }
+  if (action === 'folderScan') return scanRegistered(requireFolder(params?.folder));
+  if (action === 'folderOpen') return openCandidate(folderRelTarget(requireFolder(params?.folder), params?.path), snapshot);
+  if (action === 'folderRename') {
+    if (!sessionState) sessionState = await readSession();
+    const folderPath = requireFolder(params?.folder);
+    const target = folderRelTarget(folderPath, params?.path);
+    const updated = path.join(path.dirname(target), validBareName(params?.name));
+    if (updated === target) return scanRegistered(folderPath);
+    let exists = null;
+    try { exists = await fsp.stat(updated); } catch (error) { if (error.code !== 'ENOENT') throw new Error(`重命名失败：${error.message}`); }
+    if (exists) throw new Error('同名文件已存在');
+    try { await fsp.rename(target, updated); } catch (error) { throw new Error(`重命名失败：${error.message}`); }
+    if (opened?.filepath === target) opened = { ...opened, filepath: updated };
+    const patch = { folders: sessionState.folders.map((f) => f.lastDoc === target ? { ...f, lastDoc: updated } : f) };
+    if (sessionState.lastDoc === target) patch.lastDoc = updated;
+    sessionState = await updateSession(patch);
+    return scanRegistered(folderPath);
+  }
+  if (action === 'folderCreate') {
+    const folderPath = requireFolder(params?.folder);
+    const target = path.join(folderPath, validBareName(params?.name));
+    let exists = null;
+    try { exists = await fsp.stat(target); } catch (error) { if (error.code !== 'ENOENT') throw new Error(`创建失败：${error.message}`); }
+    if (exists) throw new Error('同名文件已存在');
+    await files.writeDocumentAtomic(target, '', { eol: 'lf', bom: false });
+    return openCandidate(target, snapshot);
+  }
+  if (action === 'folderRemove') {
+    if (!sessionState) sessionState = await readSession();
+    const folderPath = requireFolder(params?.folder);
+    const remaining = sessionState.folders.filter((f) => f.path !== folderPath);
+    sessionState = await updateSession({ folders: remaining, activeFolder: sessionState.activeFolder === folderPath ? remaining[0]?.path || null : sessionState.activeFolder });
+    return { folders: publicFolders(), activeFolder: sessionState.activeFolder };
+  }
   throw new Error('未知桌面操作');
+}
+// Folder-panel helpers. params come from the renderer, so every path is re-resolved
+// against a registered folder root before it ever touches the filesystem.
+function requireFolder(folderPath) {
+  if (!sessionState || !sessionState.folders.some((f) => f.path === folderPath)) throw new Error('文件夹未导入或已被移除');
+  return folderPath;
+}
+function folderRelTarget(folderPath, rel) {
+  if (typeof rel !== 'string') throw new Error('无效的文件路径');
+  const target = folders.resolveInFolder(folderPath, rel);
+  if (!target) throw new Error('文件必须位于已导入文件夹内');
+  return target;
+}
+function validBareName(name) {
+  const value = typeof name === 'string' ? name.trim() : '';
+  if (!value || /[\\/\0]/.test(value) || !files.ALLOWED_EXTENSIONS.has(path.extname(value).toLowerCase())) throw new Error('名称必须是 .md、.markdown 或 .txt 文件名');
+  return value;
+}
+async function scanRegistered(folderPath) {
+  const scan = await folders.scanFolder(folderPath, fsp, files.ALLOWED_EXTENSIONS, files.MAX_BYTES);
+  return { folder: folderPath, ...scan };
 }
 function sendCommand(action) { if (win && !win.isDestroyed() && win.webContents) win.webContents.send('desktop:command', action); }
 function menuTemplate() {
   const item = (label, action, accelerator) => ({ label, ...(accelerator ? { accelerator } : {}), click: () => action === 'fullscreen' ? win.setFullScreen(!win.isFullScreen()) : sendCommand(action) });
   return [
-    { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
+    { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('打开文件夹…', 'folderAdd'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
     { label: '编辑', submenu: [item('撤销', 'undo', 'CommandOrControl+Z'), item('重做', 'redo', 'CommandOrControl+Y'), item('重做（备用）', 'redo', 'CommandOrControl+Shift+Z'), { type: 'separator' }, {role:'cut',label:'剪切'}, {role:'copy',label:'复制'}, {role:'paste',label:'粘贴'}, {role:'selectAll',label:'全选'}, { type: 'separator' }, item('粗体', 'bold', 'CommandOrControl+B'), item('斜体', 'italic', 'CommandOrControl+I'), item('链接', 'link', 'CommandOrControl+K'), item('查找', 'find', 'CommandOrControl+F'), item('替换', 'replace', 'CommandOrControl+H')] },
     { label: '视图', submenu: [item('源文', 'source', 'CommandOrControl+/'), item('专注', 'focus', 'F8'), item('主题', 'theme'), item('大纲', 'outline'), item('全屏', 'fullscreen', 'F11')] },
     { label: '帮助', submenu: [item('使用说明', 'help'), { type: 'separator' }, { label: '检查更新', id: 'check-updates', click: () => { updates.checkUpdates({ net, app, dialog, shell, win }).catch(() => {}); } }] }
@@ -163,9 +301,9 @@ app.whenReady().then(async () => {
   if (!gotSingleInstanceLock) return app.quit();
   Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate()));
   let ipcLock = Promise.resolve();
-  ipcMain.handle('desktop:perform', (event, action, snapshot) => {
+  ipcMain.handle('desktop:perform', (event, action, snapshot, params) => {
     if (!isTrusted(event)) throw new Error('不受信任的桌面请求');
-    const result = ipcLock.then(() => perform(action, snapshot));
+    const result = ipcLock.then(() => perform(action, snapshot, params));
     ipcLock = result.catch(() => {});
     return result.catch(error => { throw new Error(error.message || '桌面操作失败'); });
   });

@@ -1,8 +1,13 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 
-const ACTIONS = new Set(['restore', 'open', 'new', 'save', 'saveAs', 'close', 'openPending']);
+const ACTIONS = new Set(['restore', 'open', 'new', 'save', 'saveAs', 'close', 'openPending', 'folderAdd', 'folderScan', 'folderOpen', 'folderRename', 'folderCreate', 'folderRemove']);
 function validAction(action) { if (typeof action !== 'string' || !ACTIONS.has(action)) throw new Error('未知桌面操作'); return action; }
+function validParams(params) {
+  if (params === undefined || params === null) return null;
+  if (typeof params !== 'object' || Array.isArray(params)) throw new Error('无效的操作参数');
+  return params;
+}
 // Image and export requests travel on their own channels with their own validation, so the
 // document pipeline's snapshot contract stays untouched.
 function validImagePath(value) {
@@ -27,7 +32,7 @@ function validImageMime(value) {
   return value;
 }
 contextBridge.exposeInMainWorld('desktop', Object.freeze({
-  perform(action, snapshot) { return ipcRenderer.invoke('desktop:perform', validAction(action), snapshot); },
+  perform(action, snapshot, params) { return ipcRenderer.invoke('desktop:perform', validAction(action), snapshot, validParams(params)); },
   readImage(relativePath) { return ipcRenderer.invoke('desktop:image', validImagePath(relativePath)); },
   exportHtml(html) { return ipcRenderer.invoke('desktop:exportHtml', validExportHtml(html)); },
   writeImage(mime, bytes) { return ipcRenderer.invoke('desktop:writeImage', validImageMime(mime), validImageBytes(bytes)); },

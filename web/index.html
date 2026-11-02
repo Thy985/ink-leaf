@@ -19,8 +19,16 @@
 <div class="workspace">
 <button id="outline-scrim" aria-label="关闭文档大纲" tabindex="-1"></button>
 <aside class="sidebar" aria-label="文档大纲侧栏">
-<div class="sidebar-heading">文档大纲 <span>OUTLINE</span></div>
+<div class="sidebar-heading"><span id="panel-tabs" role="tablist" aria-label="侧栏面板"><button id="panel-outline" class="panel-tab" aria-pressed="true">文档大纲 <span>OUTLINE</span></button><button id="panel-folders" class="panel-tab" aria-pressed="false">文件夹 <span>FOLDERS</span></button></span></div>
 <nav id="outline" aria-label="文档大纲"></nav>
+<section id="folder-panel" aria-label="导入的文件夹" hidden>
+<div class="folder-bar"><button id="folder-add" title="选择一个本地文件夹导入（只读扫描，不改动磁盘内容）">导入文件夹</button><button id="folder-new" title="在当前文件夹根目录新建 .md">新建</button><button id="folder-refresh" title="重新扫描当前文件夹" disabled>刷新</button></div>
+<div id="folder-chips" class="folder-chips" hidden></div>
+<input id="folder-filter" type="search" placeholder="按文件名过滤…" aria-label="按文件名过滤文档" autocomplete="off" hidden>
+<nav id="folder-tree" aria-label="文件夹内的 Markdown 文档"></nav>
+<details id="folder-excluded" hidden><summary>未纳入的文件</summary><ul id="folder-excluded-list"></ul></details>
+<p class="folder-empty" id="folder-empty" hidden>还没有导入文件夹。点「导入文件夹」或菜单「文件 → 打开文件夹…」；扫描只读，不会改动磁盘内容。</p>
+</section>
 <div class="sidebar-note"><span class="tiny-rule"></span><strong>只管落笔。</strong><p>语法在编辑时浮现，<br>离开后，让文字自己说话。</p><span class="local-label">本地草稿 · 无云端上传</span><div class="edition">WEB PREVIEW <span>09</span></div></div>
 </aside>
 <main class="main">
@@ -71,6 +79,7 @@
 <code>&lt;mark&gt; &lt;kbd&gt; &lt;details&gt;</code><span>安全 HTML 子集，脚本不执行</span>
 </div><div class="dialog-actions"><button class="primary" value="close">关闭</button></div></form></dialog>
 <dialog id="name-dialog"><form method="dialog"><h2 id="name-title">重命名文档</h2><p>名称仅用于下载文件，不会移动本地文件。</p><input id="name-input" aria-label="文档名称" required maxlength="100" autocomplete="off"><div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确定</button></div></form></dialog>
+<dialog id="folder-name-dialog"><form method="dialog"><h2 id="folder-name-title">重命名文档</h2><p id="folder-name-note">在同一文件夹内重命名，扩展名需为 .md / .markdown / .txt，不会移动到其他目录。</p><input id="folder-name-input" aria-label="文件名" required maxlength="120" autocomplete="off"><div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确定</button></div></form></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
 </body>
