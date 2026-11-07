@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 from playwright.sync_api import sync_playwright
 import json
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 ROOT=Path(__file__).resolve().parents[2] / 'test-results' / 'web'
 ROOT.mkdir(parents=True, exist_ok=True)
 cases=[]
@@ -11,14 +12,13 @@ with sync_playwright() as p:
  page=b.new_page(viewport={'width':1440,'height':1040},accept_downloads=True)
  errors=[]; page.on('pageerror',lambda e:errors.append(str(e)))
  page.on('dialog',lambda d:d.accept())
- page.goto(os.environ.get('INKSTONE_WEB_URL', 'http://127.0.0.1:4173/'));page.wait_for_function('Boolean(window.inkstone)')
- def md():return page.evaluate('inkstone.getMarkdown()')
+ page.goto(os.environ.get('INKSTONE_WEB_URL', 'http://127.0.0.1:4173/'));app_ready(page)
+ def md():return page.evaluate('() => window.inkstone.getMarkdown()')
  def load(raw):
-  page.locator('#file-input').set_input_files({'name':'测试.md','mimeType':'text/markdown','buffer':raw.encode()})
-  page.wait_for_function('(x)=>inkstone.getMarkdown()===x',arg=raw)
+  ink_load(page, raw)
  def blur():page.locator('#status').click();page.wait_for_timeout(30)
  def caret(index=0,offset=None):
-  page.evaluate('''({index,offset})=>{const el=document.querySelector('#editor').children[index]; const pos=inkstone.getBlocks().slice(0,index).reduce((n,b)=>n+b.raw.length+1,0); document.querySelector('#editor').focus(); el.classList.add('active'); const raw=el.querySelector('.block-source')||el;let left=offset??inkstone.getBlocks()[index].raw.length;const w=document.createTreeWalker(raw,NodeFilter.SHOW_TEXT);let n,last;while(n=w.nextNode()){last=n;if(left<=n.length){getSelection().setBaseAndExtent(n,left,n,left);return;}left-=n.length;}getSelection().setBaseAndExtent(raw,0,raw,0);}''',{'index':index,'offset':offset})
+  page.evaluate('''({index,offset})=>{const el=document.querySelector('#editor').children[index]; const pos=window.inkstone.getBlocks().slice(0,index).reduce((n,b)=>n+b.raw.length+1,0); document.querySelector('#editor').focus(); el.classList.add('active'); const raw=el.querySelector('.block-source')||el;let left=offset??window.inkstone.getBlocks()[index].raw.length;const w=document.createTreeWalker(raw,NodeFilter.SHOW_TEXT);let n,last;while(n=w.nextNode()){last=n;if(left<=n.length){getSelection().setBaseAndExtent(n,left,n,left);return;}left-=n.length;}getSelection().setBaseAndExtent(raw,0,raw,0);}''',{'index':index,'offset':offset})
   page.wait_for_timeout(25)
  table='| Left | Center | Right |\n| :--- | :---: | ---: |\n| **bold** | a\\|b | $x^2$ |'
  load(table);blur()
@@ -53,7 +53,7 @@ with sync_playwright() as p:
  ok('HTML details 可展开及 mark/sup 安全排版')
  raw='<div id="editor" class="syntax" style="position:fixed" onclick="window.BAD=1"><script>window.BAD=1</script><img src="https://bad.invalid/a" onerror="window.BAD=2"><iframe src="https://bad.invalid"></iframe><a href="javascript:alert(1)">bad</a><p>safe</p></div>'
  load(raw);blur()
- assert not page.evaluate('Boolean(window.BAD)')
+ assert not page.evaluate('() => Boolean(window.BAD)')
  assert page.locator('.block-preview script,.block-preview img,.block-preview iframe,.block-preview [onclick],.block-preview [style],.block-preview [id],.block-preview [class]').count()==0
  assert page.locator('.block-preview a').get_attribute('href') is None
  assert md()==raw
@@ -91,13 +91,13 @@ with sync_playwright() as p:
  page.evaluate('''() => { window.__savedFile = null; window.showSaveFilePicker = async (opts) => { const name = opts.suggestedName; return { kind: 'file', name, createWritable: async () => ({ parts: [], async write(part) { this.parts.push(await part.text()); }, async close() { window.__savedFile = { name, text: this.parts.join('') }; } }), getFile: async () => ({ name, size: 0 }), queryPermission: async () => 'granted', requestPermission: async () => 'granted' }; }; }''')
  page.locator('#save').click()
  for _ in range(50):
-  if page.evaluate('Boolean(window.__savedFile)'): break
+  if page.evaluate('() => Boolean(window.__savedFile)'): break
   page.wait_for_timeout(100)
- saved=page.evaluate('window.__savedFile');assert saved['text']==raw and saved['name'].endswith('.md'),repr(saved)
+ saved=page.evaluate('() => window.__savedFile');assert saved['text']==raw and saved['name'].endswith('.md'),repr(saved)
  ok('复杂语法源码切换与 FSA 保存逐字一致')
- page.wait_for_timeout(350);page.reload();page.wait_for_function('Boolean(window.inkstone)');assert md()==raw
+ page.wait_for_timeout(350);page.reload();app_ready(page);assert md()==raw
  ok('复杂文档本地持久化恢复')
- page.set_viewport_size({'width':390,'height':844});blur();assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+ page.set_viewport_size({'width':390,'height':844});blur();assert page.evaluate('() => document.documentElement.scrollWidth<=innerWidth')
  page.locator('#theme-toggle').click();assert page.locator('html').get_attribute('data-theme')=='dark'
  ok('手机布局与深色模式')
  assert not errors,errors

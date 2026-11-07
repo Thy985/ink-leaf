@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -36,21 +37,18 @@ def wait_server():
 
 def boot(page):
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def load(page, raw):
-    page.locator("#file-input").set_input_files(
-        {"name": "v07.md", "mimeType": "text/markdown", "buffer": raw.encode("utf-8")}
-    )
-    page.wait_for_function("(value) => window.inkstone.getMarkdown() === value", arg=raw)
+    ink_load(page, raw, name="v07.md")
 
 
 def markdown(page):
-    return page.evaluate("window.inkstone.getMarkdown()")
+    return page.evaluate("() => window.inkstone.getMarkdown()")
 
 
 def blur(page):
@@ -120,7 +118,7 @@ with sync_playwright() as playwright:
         load(page, raw)
         caret(page, 2, None)
         paste_png(page, base64.b64encode(PNG).decode())
-        page.wait_for_function("window.inkstone.getMarkdown().includes('![粘贴图片](data:image/png;base64,')")
+        markdown_contains(page, '![粘贴图片](data:image/png;base64,')
         assert markdown(page).startswith("# 剪贴板\n\n开头段落![粘贴图片](data:image/png;base64,")
         page.keyboard.press("Control+z")
         assert markdown(page) == raw, "inserting a pasted image must be undoable"
@@ -141,10 +139,10 @@ with sync_playwright() as playwright:
         load(page, "# 导出\n\n正文 $a^2$。\n")
         caret(page, 2, None)
         paste_png(page, base64.b64encode(PNG).decode())
-        page.wait_for_function("window.inkstone.getMarkdown().includes('data:image/png;base64,')")
+        markdown_contains(page, 'data:image/png;base64,')
         blur(page)
         page.wait_for_selector("#editor .ink-image-ready img")
-        assert page.evaluate("document.querySelector('#editor .ink-image-ready img').naturalWidth") == 1
+        assert page.evaluate("() => document.querySelector('#editor .ink-image-ready img').naturalWidth") == 1
         cases.append("粘贴的 data URL 图片走既有渲染管线直接显示")
         print("PASS", cases[-1], flush=True)
     finally:
