@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -35,21 +36,18 @@ def wait_server():
 
 def boot(page):
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def load(page, raw):
-    page.locator("#file-input").set_input_files(
-        {"name": "v06.md", "mimeType": "text/markdown", "buffer": raw.encode("utf-8")}
-    )
-    page.wait_for_function("(value) => window.inkstone.getMarkdown() === value", arg=raw)
+    ink_load(page, raw, name="v06.md")
 
 
 def markdown(page):
-    return page.evaluate("window.inkstone.getMarkdown()")
+    return page.evaluate("() => window.inkstone.getMarkdown()")
 
 
 def blur(page):
@@ -105,7 +103,7 @@ with sync_playwright() as playwright:
         assert page.locator("#editor .ink-image").get_attribute("data-ink-src") == "house.png"
         assert page.locator("#editor .ink-image .ink-image-label").inner_text() == "小屋"
         assert page.locator("#editor img").count() == 0, "raw <img> must never reach the editor"
-        assert not page.evaluate("Boolean(window.PWNED)")
+        assert not page.evaluate("() => Boolean(window.PWNED)")
         assert page.locator("#editor .ink-image .ink-image-note").inner_text().find("桌面版") >= 0
         assert markdown(page) == raw
         cases.append("图片渲染为占位卡片，原始 img 与 onerror 被剥离")
@@ -122,7 +120,7 @@ with sync_playwright() as playwright:
         assert not hits, "no network request may happen before the user clicks"
         page.locator("#editor .ink-image-load").click()
         page.wait_for_selector("#editor .ink-image-ready img")
-        assert page.evaluate("document.querySelector('#editor .ink-image-ready img').naturalWidth") == 1
+        assert page.evaluate("() => document.querySelector('#editor .ink-image-ready img').naturalWidth") == 1
         page.wait_for_timeout(120)
         assert len(hits) == 1, hits
         assert markdown(page) == raw
@@ -134,7 +132,7 @@ with sync_playwright() as playwright:
         load(page, raw)
         blur(page)
         page.wait_for_selector("#editor .ink-image-ready img")
-        assert page.evaluate("document.querySelector('#editor .ink-image-ready img').naturalWidth") == 1
+        assert page.evaluate("() => document.querySelector('#editor .ink-image-ready img').naturalWidth") == 1
         assert page.locator("#editor .ink-image-load").count() == 0
         cases.append("data URL 图片自动加载")
         print("PASS", cases[-1], flush=True)

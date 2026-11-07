@@ -343,6 +343,9 @@ function updateActive() {
 }
 function updateUI() {
   const value = text();
+  // A DOM-observable mirror of the model for automation: the web app runs under a strict
+  // CSP without 'unsafe-eval', so tests poll this marker instead of string-eval'd waits.
+  document.body.dataset.inkMd = value.replace(/\n/g, '\u0001');
   $('filename').textContent = filename;
   $('dirty').textContent = value === savedText ? '' : '•';
   document.title = `${value === savedText ? '' : '● '}${filename} · 墨页`;
@@ -1330,6 +1333,8 @@ render();
 if (!draftAvailable) $('status').textContent = '浏览器草稿不可用，请保存 .md';
 // Public, read-only diagnostics for regression tests; no document content leaves this origin.
 window.inkstone = { getMarkdown: text, getBlocks: () => blocks.map((b) => ({ ...b })), get isComposing() { return composing; } };
+// CSP-free readiness marker for automated tests: the app never needs unsafe-eval to wait for it.
+document.body.classList.add('ink-app-ready');
 
 
 // Minimal, allowlisted native bridge. No filesystem API is exposed to document HTML.

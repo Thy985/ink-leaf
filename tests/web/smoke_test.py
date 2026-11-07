@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import os
 from playwright.sync_api import sync_playwright
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 
 ROOT = Path(__file__).resolve().parents[2] / 'test-results' / 'web'
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -19,14 +20,13 @@ with sync_playwright() as p:
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('dialog', lambda dialog: dialog.accept())
     page.goto(os.environ.get('INKSTONE_WEB_URL', 'http://127.0.0.1:4173/'))
-    page.wait_for_function('Boolean(window.inkstone)')
+    app_ready(page)
 
     def markdown():
-        return page.evaluate('window.inkstone.getMarkdown()')
+        return page.evaluate('() => window.inkstone.getMarkdown()')
 
     def load(value, name='测试.md'):
-        page.locator('#file-input').set_input_files({"name": name, "mimeType": "text/markdown", "buffer": value.encode('utf-8')})
-        page.wait_for_function('(expected) => window.inkstone.getMarkdown() === expected', arg=value.replace('\r\n', '\n').replace('\r', '\n'))
+        ink_load(page, value, name=name)
 
     def caret(index=0, offset=None):
         page.evaluate('''({index, offset}) => {
@@ -72,7 +72,7 @@ with sync_playwright() as p:
     page.keyboard.type(' world', delay=20)
     page.keyboard.insert_text('，你好')
     assert markdown() == 'hello world，你好', repr(markdown())
-    assert page.evaluate('getSelection().anchorOffset') >= 1
+    assert page.evaluate('() => getSelection().anchorOffset') >= 1
     page.keyboard.type('!', delay=20)
     assert markdown() == 'hello world，你好!'
     ok('连续输入、中文文本与末尾光标稳定')
@@ -161,7 +161,7 @@ with sync_playwright() as p:
       document.getElementById('editor').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));
     }''')
     assert markdown() == 'safe\n\n<script>window.BAD=true</script>\n**粘贴**'
-    assert not page.evaluate('Boolean(window.BAD)')
+    assert not page.evaluate('() => Boolean(window.BAD)')
     assert page.locator('#editor script').count() == 0
     ok('多行纯文本粘贴及 HTML 注入防护')
 
@@ -193,25 +193,25 @@ with sync_playwright() as p:
     }''')
     page.locator('#save').click()
     for _ in range(50):
-        if page.evaluate('Boolean(window.__savedFile)'): break
+        if page.evaluate('() => Boolean(window.__savedFile)'): break
         page.wait_for_timeout(100)
-    saved = page.evaluate('window.__savedFile')
+    saved = page.evaluate('() => window.__savedFile')
     assert saved['name'] == '测试.md' and saved['text'] == '# 源码\n\n**保留**\n', saved
     ok('源码视图与 FSA 保存内容一致')
 
     page.wait_for_timeout(400)
     page.reload()
-    page.wait_for_function('Boolean(window.inkstone)')
+    app_ready(page)
     assert markdown() == '# 源码\n\n**保留**\n'
     ok('浏览器本地草稿恢复')
 
-    page.evaluate('localStorage.clear()')
+    page.evaluate('() => localStorage.clear()')
     page.reload()
-    page.wait_for_function('Boolean(window.inkstone)')
+    app_ready(page)
     page.wait_for_timeout(200)
     page.screenshot(path=str(ROOT / 'preview-desktop.png'), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
-    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth')
     page.screenshot(path=str(ROOT / 'preview-mobile.png'), full_page=True)
     ok('桌面/手机布局无水平溢出')
     assert not errors, errors

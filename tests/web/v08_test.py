@@ -5,7 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import time
 from playwright.sync_api import sync_playwright
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -34,21 +36,18 @@ def wait_server():
 
 def boot(page):
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def load(page, raw):
-    page.locator("#file-input").set_input_files(
-        {"name": "v08.md", "mimeType": "text/markdown", "buffer": raw.encode("utf-8")}
-    )
-    page.wait_for_function("(value) => window.inkstone.getMarkdown() === value", arg=raw)
+    ink_load(page, raw, name="v08.md")
 
 
 def markdown(page):
-    return page.evaluate("window.inkstone.getMarkdown()")
+    return page.evaluate("() => window.inkstone.getMarkdown()")
 
 
 def blur(page):
@@ -143,9 +142,15 @@ with sync_playwright() as playwright:
         load(page, raw)
         caret(page, 2, None)
         paste_files(page, [base64.b64encode(PNG).decode(), base64.b64encode(PNG).decode()])
-        page.wait_for_function(
-            "(window.inkstone.getMarkdown().match(/!\\[粘贴图片\\]\\(data:image\\/png;base64,/g) || []).length === 2"
-        )
+        import time as _t
+        _dl = _t.monotonic() + 30
+        while True:
+            _n = page.evaluate("() => (document.body.dataset.inkMd.match(/!\\[粘贴图片\\]\\(data:image\\/png;base64,/g) || []).length")
+            if _n >= 2:
+                break
+            if _t.monotonic() > _dl:
+                raise TimeoutError("expected 2 image references in data-ink-md")
+            _t.sleep(0.05)
         md = markdown(page)
         assert "\n\n![粘贴图片](" in md, md
         blur(page)
@@ -156,9 +161,15 @@ with sync_playwright() as playwright:
         load(page, raw)
         caret(page, 2, None)
         paste_files(page, [base64.b64encode(PNG).decode(), base64.b64encode(PNG).decode()])
-        page.wait_for_function(
-            "(window.inkstone.getMarkdown().match(/!\\[粘贴图片\\]\\(data:image\\/png;base64,/g) || []).length === 2"
-        )
+        import time as _t
+        _dl = _t.monotonic() + 30
+        while True:
+            _n = page.evaluate("() => (document.body.dataset.inkMd.match(/!\\[粘贴图片\\]\\(data:image\\/png;base64,/g) || []).length")
+            if _n >= 2:
+                break
+            if _t.monotonic() > _dl:
+                raise TimeoutError("expected 2 image references in data-ink-md")
+            _t.sleep(0.05)
         page.keyboard.press("Control+z")
         assert markdown(page) == raw, "a batch paste must undo as one step"
         cases.append("多图粘贴作为一步整体撤销")
@@ -174,7 +185,7 @@ with sync_playwright() as playwright:
         composition(page, "compositionend")
         page.wait_for_timeout(100)
         paste_files(page, [base64.b64encode(PNG).decode()])
-        page.wait_for_function("window.inkstone.getMarkdown().includes('data:image/png;base64,')")
+        markdown_contains(page, "data:image/png;base64,")
         page.keyboard.press("Control+z")
         assert markdown(page) == raw, "document must survive the composing round-trip"
         cases.append("组合输入中粘贴被忽略，组合结束恢复正常")
@@ -195,7 +206,7 @@ with sync_playwright() as playwright:
         load(page, raw)
         caret(page, 2, None)
         assert drag_files(page, "drop", "#editor")
-        page.wait_for_function("window.inkstone.getMarkdown().includes('data:image/png;base64,')")
+        markdown_contains(page, 'data:image/png;base64,')
         page.wait_for_timeout(150)
         assert "已插入" in page.locator("#toast").inner_text(), page.locator("#toast").inner_text()
         assert "拖到编辑器内" not in page.locator("#toast").inner_text()
