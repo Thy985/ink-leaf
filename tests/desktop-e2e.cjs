@@ -130,6 +130,17 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   assert(html.includes('data:image/png;base64,'),'cached local images embed as data URLs');
   assert(html.includes('ink-export-missing'),'unresolved images stay visible placeholders');
   ok('菜单导出 HTML 生成离线单文件');
+  // Unclosed dollar display math remains a math block through EOF, matching the editor model.
+  await edit('$$\nx^2\n');
+  const openMathExport=path.join(fixtures,'未闭合公式.html');
+  await queue('save',{canceled:false,filePath:openMathExport});
+  await cmd('exportHtml');
+  await page.waitForTimeout(400);
+  const openMathHtml=await fs.readFile(openMathExport,'utf8');
+  assert(openMathHtml.includes('<math'),'unclosed $$ math must export as MathML through EOF');
+  ok('未闭合 $$ display math 导出为 MathML，延伸至文档末尾');
+  await page.locator('#source-toggle').click();
+  await page.locator('#status').click();
   // v0.7: pasting a screenshot writes it beside the saved document and renders it.
   await page.locator('#editor .rich-block').first().click();
   await page.evaluate((bytes) => {

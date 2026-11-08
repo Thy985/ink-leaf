@@ -62,9 +62,9 @@ md.block.ruler.before('paragraph', 'ink_math_block', (state, startLine, endLine,
     const standalone = delim === '$$' ? /^ {0,3}\$\$\s*$/ : /^ {0,3}\\\]\s*$/;
     let line = startLine + 1;
     while (line < endLine && !standalone.test(lineText(line))) line++;
-    if (line >= endLine) return false;
+    if (line >= endLine && delim !== '$$') return false;
     body = state.getLines(startLine + 1, line, state.blkIndent, false);
-    nextLine = line + 1;
+    nextLine = line < endLine ? line + 1 : endLine;
   }
   if (silent) return true;
   const token = state.push('ink_math_block', 'math', 0);
