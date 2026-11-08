@@ -294,6 +294,7 @@ async function resolveLocalImage(box, src) {
   }
 }
 function armRemoteImage(box, src) {
+  box.querySelectorAll('.ink-image-load, .ink-image-note').forEach((node) => node.remove());
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'ink-image-load';
@@ -303,6 +304,7 @@ function armRemoteImage(box, src) {
   box.append(button);
 }
 function armLocalImage(box, src) {
+  box.querySelectorAll('.ink-image-load, .ink-image-note').forEach((node) => node.remove());
   const note = document.createElement('span');
   note.className = 'ink-image-note';
   if (desktop) {
@@ -597,6 +599,7 @@ editor.addEventListener('dragover', (event) => {
   if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault();
 });
 editor.addEventListener('drop', (event) => {
+  if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
   event.preventDefault();
   const files = [...(event.dataTransfer?.files || [])].filter((f) => PASTE_IMAGE_MIME.has(f.type));
   if (files.length) { insertImages(files); return; }
@@ -637,7 +640,11 @@ async function insertImages(files) {
   if (imageBusy) { toast('正在插入图片，请稍候'); return; }
   if (!files.length) return;
   imageBusy = true;
+  const previousEditable = editor.contentEditable;
+  const previousReadonly = source.readOnly;
   try {
+    editor.contentEditable = 'false';
+    source.readOnly = true;
     const at = range();
     if (!at) { toast('请先把光标放进编辑器，再插入图片'); return; }
     const refs = [];
@@ -665,7 +672,7 @@ async function insertImages(files) {
       toast(refs.length > 1 ? `已插入 ${refs.length} 张图片` : desktop ? `已插入图片 ${singleName}` : '已插入内嵌图片');
     }
     if (failures.length) toast(failures[0] + (failures.length > 1 ? `（另有 ${failures.length - 1} 项失败）` : ''));
-  } finally { imageBusy = false; }
+  } finally { editor.contentEditable = previousEditable; source.readOnly = previousReadonly; imageBusy = false; }
 }
 function indentSelection(outdent = false) {
     const s = range(), value = text(), p = locate(s.start);
@@ -747,7 +754,7 @@ $('source-toggle').onclick = () => {
 source.addEventListener('input', () => {
   if (composing) return;
   remember(beforeSelection, 'typing');
-  blocks = parseBlocks(source.value, blocks); currentText = text(); resizeSource(); updateUI(); persist();
+  blocks = parseBlocks(source.value, blocks); currentText = text(); doc = buildDocContext(blocks); resizeSource(); updateUI(); persist();
 });
 source.addEventListener('beforeinput', () => { beforeSelection = selection(); });
 source.addEventListener('compositionstart', () => { clearTimeout(compositionTimer); beforeSelection = selection(); composing = true; });
@@ -760,6 +767,8 @@ $('open').onclick = () => desktop ? runDesktop('open') : isAndroid ? runMobileFi
 // other browsers keep the classic file input and download flow.
 const supportsFSA = typeof window.showOpenFilePicker === 'function';
 const FSA_TYPES = [{ description: 'Markdown/文本', accept: { 'text/markdown': ['.md', '.markdown'], 'text/plain': ['.txt'] } }];
+function decodeUtf8(buffer) { return new TextDecoder('utf-8', { fatal: true }).decode(buffer).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n'); }
+async function writeWebFile(writable, value) { try { await writable.write(new Blob([value], { type: 'text/markdown;charset=utf-8' })); await writable.close(); } catch (error) { try { await writable.abort?.(); } catch {} throw error; } }
 let webHandle = null;
 function mdFilename(name) { return /\.(md|markdown)$/i.test(name) ? name : name.replace(/\.[^.]+$/, '') + '.md'; }
 function forgetWebHandle() { webHandle = null; }
@@ -771,7 +780,7 @@ async function openWebFile() {
     const [handle] = await window.showOpenFilePicker({ types: FSA_TYPES, multiple: false });
     const file = await handle.getFile();
     if (file.size > 2 * 1024 * 1024) { toast('暂只支持 2 MB 以内的文本文件。'); return; }
-    const value = (await file.text()).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const value = decodeUtf8(await file.arrayBuffer());
     filename = file.name; savedText = value; webHandle = handle;
     history = []; future = []; lastKind = ''; activeId = null;
     imageCache.clear();
@@ -789,7 +798,7 @@ $('file-input').onchange = async (event) => {
   if (file.size > 2 * 1024 * 1024) { toast('原型暂只支持 2 MB 以内的文本文件。'); return; }
   if (text() !== savedText && !window.confirm('当前文档有未导出修改。打开文件会替换浏览器草稿，是否继续？')) return;
   try {
-    const value = (await file.text()).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const value = decodeUtf8(await file.arrayBuffer());
     filename = file.name; savedText = value; forgetWebHandle();
     history = []; future = []; lastKind = ''; imageCache.clear();
     apply(value, { a: 0, f: 0 }, 'open', false);
@@ -809,8 +818,7 @@ async function save() {
         if (await webHandle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw Object.assign(new Error('未授予写入权限'), { name: 'PermissionDenied' });
       }
       const writable = await webHandle.createWritable();
-      await writable.write(new Blob([value], { type: 'text/markdown;charset=utf-8' }));
-      await writable.close();
+      await writeWebFile(writable, value);
       const file = await webHandle.getFile();
       if (file.name) filename = file.name;
       savedText = value; updateUI(); persist(); toast('已保存到本地文件');
@@ -832,11 +840,11 @@ async function saveAsWeb() {
   try {
     const handle = await window.showSaveFilePicker({ suggestedName: mdFilename(filename), types: FSA_TYPES });
     const writable = await handle.createWritable();
-    await writable.write(new Blob([text()], { type: 'text/markdown;charset=utf-8' }));
-    await writable.close();
+    await writeWebFile(writable, text());
     webHandle = handle;
     const file = await handle.getFile();
     if (file.name) filename = file.name;
+    imageCache.clear();
     savedText = text(); updateUI(); persist(); toast(`已另存为 ${filename}`);
   } catch (error) {
     if (error?.name === 'AbortError') return;
@@ -959,6 +967,7 @@ function exportImage(url, box) {
 
 async function exportBodyHTML() {
   const host = document.createElement('template');
+  doc = buildDocContext(blocks);
   host.innerHTML = renderDocumentHTML(text(), { doc });
   for (const box of [...host.content.querySelectorAll('.ink-image')]) {
     const src = box.dataset.inkSrc || '';
@@ -1064,7 +1073,7 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   const inField = event.target instanceof HTMLInputElement || event.target.closest('dialog');
-  if (inField) return;
+  if (inField && !['s', 'o'].includes(key)) return;
   if (key === 'f' || key === 'h') { event.preventDefault(); openFind(); if (key === 'h') $('replace-input').focus(); return; }
   if (key === 'k') { event.preventDefault(); format('link'); return; }
   if (['s', 'o', 'b', 'i', 'z', 'y'].includes(key)) {
@@ -1345,7 +1354,11 @@ function desktopSnapshot() {
 function installNativeDocument(result, action) {
   if (!result || result.canceled) return;
   if (result.filename) filename = result.filename;
-  if ('filepath' in result) desktopPath = result.filepath;
+  if ('filepath' in result) {
+    const pathChanged = desktopPath !== result.filepath;
+    desktopPath = result.filepath;
+    if (pathChanged && action === 'saveAs') imageCache.clear();
+  }
   if (['save', 'saveAs'].includes(action)) {
     // User may continue typing while the OS dialog is open. Only mark the
     // exact snapshot actually written as saved, never edits typed afterward.
@@ -1362,6 +1375,10 @@ function installNativeDocument(result, action) {
     toast(action === 'restore' ? '本地文档已就绪' : action === 'new' ? '新的一页，开始落笔吧' : '已打开 ' + filename);
   }
 }
+function friendlyError(error, fallback) {
+  const message = String(error?.message || error || '');
+  return message.replace(/^Error invoking remote method '[^']+':\s*Error:\s*/i, '').replace(/^Error:\s*/i, '') || fallback;
+}
 async function runDesktop(action, params) {
   if (!desktop || desktopBusy) return;
   if (composing) { toast('请先完成输入法选词，再进行文件操作'); return; }
@@ -1376,7 +1393,7 @@ async function runDesktop(action, params) {
     if (result && result.session) applySession(result.session);
     return result;
   } catch (error) {
-    toast(error?.message || '文件操作失败，请重试');
+    toast(friendlyError(error, '文件操作失败，请重试'));
     $('status').textContent = '文件操作失败 · 你的内容仍保留在编辑器中';
   } finally {
     desktopBusy = false;
@@ -1531,6 +1548,7 @@ function renderTree() {
   if (scan.truncated) { const li = document.createElement('li'); li.textContent = '扫描条目过多，结果已截断（最多 6 层、2000 项、300 个文档）。'; excludedList.append(li); excludedWrap.hidden = false; }
 }
 async function setActiveFolder(folderPath) {
+  if (desktopBusy) { toast('正在扫描，请稍候再切换文件夹'); return; }
   folderState.activeFolder = folderPath;
   folderState.lastScan = null;
   renderChips();

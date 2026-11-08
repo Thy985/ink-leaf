@@ -48,11 +48,11 @@ md.inline.ruler.before('escape', 'ink_math', (state, silent) => {
 // math-looking lines inside list items keep their previous inline treatment.
 md.block.ruler.before('paragraph', 'ink_math_block', (state, startLine, endLine, silent) => {
   const lineText = (line) => state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
-  const open = /^ {0,3}(\$\$|\\\[)(.*)$/.exec(lineText(startLine));
+  const open = /^ {0,3}(\$\$)(.*)$/.exec(lineText(startLine));
   if (!open) return false;
   const delim = open[1];
   if (silent) return true;
-  const closeRe = delim === '$$' ? /\$\$$/ : /\\\]$/;
+  const closeRe = /\$\$$/;
   const rest = open[2];
   const inlineClose = closeRe.exec(rest);
   let body, nextLine;
@@ -60,7 +60,7 @@ md.block.ruler.before('paragraph', 'ink_math_block', (state, startLine, endLine,
     body = rest.slice(0, inlineClose.index);
     nextLine = startLine + 1;
   } else {
-    const standalone = delim === '$$' ? /^ {0,3}\$\$\s*$/ : /^ {0,3}\\\]\s*$/;
+    const standalone = /^ {0,3}\$\$\s*$/;
     let line = startLine + 1;
     while (line < endLine && !standalone.test(lineText(line))) line++;
     // Unclosed math runs to the end of the document, matching the editor model.
@@ -248,7 +248,7 @@ export function renderDocumentHTML(raw, options = {}) {
       const previous = index > 0 ? lines[index - 1] : '';
       if (index > 0 && !/^\s*$/.test(previous) && !ownLine.test(previous)) return line;
       const entry = options.doc.footnotes.get(m[1].trim().toLowerCase());
-      if (!entry?.number) return line;
+      if (!entry?.number || footnoteDefs.some((def) => def.number === entry.number)) return line;
       footnoteDefs.push({ key: `INKFN${crypto.randomUUID().replaceAll('-', '')}${entry.number}SEED`, number: entry.number, body: m[2] });
       return footnoteDefs[footnoteDefs.length - 1].key;
     }).join('\n');
@@ -260,7 +260,7 @@ export function renderDocumentHTML(raw, options = {}) {
   });
   let out = reinsertSeeds(DOMPurify.sanitize(md.render(source, env), SANITIZE_CONFIG), env);
   footnoteDefs.forEach(({ key, number, body, inner }) => {
-    out = out.replaceAll(key, `<p class="ink-fn" id="ink-fn-${number}"><span class="ink-fn-num">${number}.</span> ${inner || md.utils.escapeHtml(body)}</p>`);
+    out = out.replaceAll(key, `<div class="ink-fn" id="ink-fn-${number}"><span class="ink-fn-num">${number}.</span> ${inner || md.utils.escapeHtml(body)}</div>`);
   });
   return out;
 }

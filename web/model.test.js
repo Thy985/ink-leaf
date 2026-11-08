@@ -148,8 +148,17 @@ test('supports backslash escapes and multi-backtick code spans', () => {
 test('keeps single-line math and HTML boundaries', () => {
   const source = '$$x$$\nafter\n\\[y\\]\nafter2\n<hr>\nafter3\n<div/>\nafter4';
   const blocks = parseBlocks(source);
-  assert.deepEqual(blocks.map(({ type }) => type), ['math','paragraph','math','paragraph','html','paragraph','html','paragraph']);
+  assert.deepEqual(blocks.map(({ type }) => type), ['math','paragraph','html','paragraph','html','paragraph']);
   assert.equal(serialize(blocks), source);
+});
+
+test('falls back to an ordinary paragraph for an unclosed line-initial bracket escape', () => {
+  const source = String.raw`\[ not display math
+still ordinary text`;
+  const blocks = parseBlocks(source);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].type, 'paragraph');
+  assert.equal(blocks[0].raw, source);
 });
 
 test('bounds unclosed HTML at blank lines but lets script and style reach closing tags', () => {
