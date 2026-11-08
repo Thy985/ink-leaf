@@ -53,7 +53,7 @@ export function classify(raw) {
     return {type:'table',header:first,separator:value.split('\n')[1]};
   }
   const fence=FENCE_RE.exec(first); if (fence) return {type:'code',prefix:fence[1],fence:fence[1][0],fenceLength:fence[1].length,info:fence[2].trim()||undefined};
-  if (/^ {0,3}\$\$/.test(first)) return {type:'math',delimiter:'$$'};
+  if (/^ {0,3}(?:\$\$|\\\[)/.test(first)) return {type:'math',delimiter:first.match(/^ {0,3}(\$\$|\\\[)/)[1]};
   const footnote=FOOTNOTE_DEF_RE.exec(first); if (footnote) return {type:'footnoteDef',label:footnote[1],body:footnote[2]};
   const linkDef=LINK_DEF_RE.exec(first); if (linkDef) return {type:'linkDef',label:linkDef[1],url:linkDef[2],title:linkDef[3]};
   if (HR_RE.test(first)) return {type:'hr'};
@@ -70,7 +70,15 @@ function isDefinitionLine(line) { return FOOTNOTE_DEF_RE.test(line) || LINK_DEF_
 // Like CommonMark, a definition never interrupts a paragraph — and, in this flat model, never
 // escapes a list item either. Every other block is already closed, so a definition after a
 // heading, rule, quote, table, fence, HTML or another definition starts its own block.
-function isSpecialLine(line, lines, index, inOpenBlock = false) { return Boolean(FENCE_RE.test(line)||/^ {0,3}\$\$/.test(line)||(!inOpenBlock&&isDefinitionLine(line))||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
+function bracketMathHasClose(lines, index) {
+  for (let n = index; n < lines.length; n++) {
+    if (n > index && /^\s*$/.test(lines[n])) return false;
+    if (n === index && hasInlineMathClose(lines[n], '\\[')) return true;
+    if (n > index && /^ {0,3}\\\]\s*$/.test(lines[n])) return true;
+  }
+  return false;
+}
+function isSpecialLine(line, lines, index, inOpenBlock = false) { return Boolean(FENCE_RE.test(line)||/^ {0,3}\$\$/.test(line)||(/^ {0,3}\\\[/.test(line)&&bracketMathHasClose(lines,index))||(!inOpenBlock&&isDefinitionLine(line))||HR_RE.test(line)||HEADING_RE.test(line)||LIST_RE.test(line)||QUOTE_RE.test(line)||classifyHtml(line)||(lines && index+1<lines.length && tableLine(line) && TABLE_SEPARATOR_RE.test(lines[index+1]))); }
 function nextId(used,serial) { let id; do id=`block-${serial.value++}`; while(used.has(id)); used.add(id); return id; }
 
 export function parseBlocks(text, previous=[]) {
@@ -88,7 +96,7 @@ export function parseBlocks(text, previous=[]) {
       continue;
     }
     const opening=FENCE_RE.exec(line); if(opening){const start=i++; while(i<lines.length&&!isFenceClose(lines[i],opening[1]))i++; if(i<lines.length)i++; parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
-    const mathOpen=/^ {0,3}(\$\$)/.exec(line); if(mathOpen){const start=i++, delim=mathOpen[1]; if(!hasInlineMathClose(line,delim)){ while(i<lines.length&&!isMathClose(lines[i],delim))i++; if(i<lines.length)i++; } parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
+    const mathOpen=/^ {0,3}(\$\$|\\\[)/.exec(line); if(mathOpen && (mathOpen[1] === '$$' || bracketMathHasClose(lines, i))){const start=i++, delim=mathOpen[1]; if(!hasInlineMathClose(line,delim)){ while(i<lines.length&&!isMathClose(lines[i],delim))i++; if(i<lines.length)i++; } parsed.push({...classify(lines[start]),raw:lines.slice(start,i).join('\n')}); continue;}
     if(classifyHtml(line)){ const start=i++, htmlInfo=classifyHtml(line), tag=htmlInfo.tag; const close=new RegExp(`</${tag}\\s*>`,'i'); const selfClosing=/\/\s*>\s*$/.test(line)||HTML_VOID_TAGS.has(tag); if(!selfClosing&&!close.test(line)){ while(i<lines.length&&!close.test(lines[i])&&(tag==='script'||tag==='style'||!/^\s*$/.test(lines[i])))i++; if(i<lines.length&&close.test(lines[i]))i++; } parsed.push({...htmlInfo,raw:lines.slice(start,i).join('\n')}); continue; }
     if (tableLine(line) && i+1<lines.length && TABLE_SEPARATOR_RE.test(lines[i+1])) { const start=i; i+=2; while(i<lines.length&&tableLine(lines[i]))i++; const raw=lines.slice(start,i).join('\n'); parsed.push({...classify(raw),raw}); continue; }
     if (isSpecialLine(line,lines,i)) { const list=classifyList(line); if(list){ const start=i++; while(i<lines.length&&!/^\s*$/.test(lines[i])&&!isSpecialLine(lines[i],lines,i,true))i++; parsed.push({...list,raw:lines.slice(start,i).join('\n')}); } else { parsed.push({...classify(line),raw:line}); i++; } continue; }

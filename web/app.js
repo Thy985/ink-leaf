@@ -639,14 +639,14 @@ async function insertImages(files) {
   if (mobileBusy || desktopBusy) return;
   if (imageBusy) { toast('正在插入图片，请稍候'); return; }
   if (!files.length) return;
+  const at = range();
+  if (!at) { toast('请先把光标放进编辑器，再插入图片'); return; }
   imageBusy = true;
   const previousEditable = editor.contentEditable;
   const previousReadonly = source.readOnly;
   try {
     editor.contentEditable = 'false';
     source.readOnly = true;
-    const at = range();
-    if (!at) { toast('请先把光标放进编辑器，再插入图片'); return; }
     const refs = [];
     const failures = [];
     let singleName = null;
@@ -845,6 +845,8 @@ async function saveAsWeb() {
     const file = await handle.getFile();
     if (file.name) filename = file.name;
     imageCache.clear();
+    [...editor.children].forEach((node) => { node._key = null; });
+    render();
     savedText = text(); updateUI(); persist(); toast(`已另存为 ${filename}`);
   } catch (error) {
     if (error?.name === 'AbortError') return;
@@ -1072,8 +1074,8 @@ document.addEventListener('keydown', (event) => {
     if (action) { event.preventDefault(); nativeCommand(action); }
     return;
   }
-  const inField = event.target instanceof HTMLInputElement || event.target.closest('dialog');
-  if (inField && !['s', 'o'].includes(key)) return;
+  if (event.target.closest('dialog')) return;
+  if (event.target instanceof HTMLInputElement && ['z', 'y', 'b', 'i', 'k'].includes(key)) return;
   if (key === 'f' || key === 'h') { event.preventDefault(); openFind(); if (key === 'h') $('replace-input').focus(); return; }
   if (key === 'k') { event.preventDefault(); format('link'); return; }
   if (['s', 'o', 'b', 'i', 'z', 'y'].includes(key)) {
@@ -1357,7 +1359,11 @@ function installNativeDocument(result, action) {
   if ('filepath' in result) {
     const pathChanged = desktopPath !== result.filepath;
     desktopPath = result.filepath;
-    if (pathChanged && action === 'saveAs') imageCache.clear();
+    if (pathChanged && action === 'saveAs') {
+      imageCache.clear();
+      [...editor.children].forEach((node) => { node._key = null; });
+      render();
+    }
   }
   if (['save', 'saveAs'].includes(action)) {
     // User may continue typing while the OS dialog is open. Only mark the

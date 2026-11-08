@@ -48,11 +48,10 @@ md.inline.ruler.before('escape', 'ink_math', (state, silent) => {
 // math-looking lines inside list items keep their previous inline treatment.
 md.block.ruler.before('paragraph', 'ink_math_block', (state, startLine, endLine, silent) => {
   const lineText = (line) => state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
-  const open = /^ {0,3}(\$\$)(.*)$/.exec(lineText(startLine));
+  const open = /^ {0,3}(\$\$|\\\[)(.*)$/.exec(lineText(startLine));
   if (!open) return false;
   const delim = open[1];
-  if (silent) return true;
-  const closeRe = /\$\$$/;
+  const closeRe = delim === '$$' ? /\$\$$/ : /\\\]$/;
   const rest = open[2];
   const inlineClose = closeRe.exec(rest);
   let body, nextLine;
@@ -60,13 +59,14 @@ md.block.ruler.before('paragraph', 'ink_math_block', (state, startLine, endLine,
     body = rest.slice(0, inlineClose.index);
     nextLine = startLine + 1;
   } else {
-    const standalone = /^ {0,3}\$\$\s*$/;
+    const standalone = delim === '$$' ? /^ {0,3}\$\$\s*$/ : /^ {0,3}\\\]\s*$/;
     let line = startLine + 1;
     while (line < endLine && !standalone.test(lineText(line))) line++;
-    // Unclosed math runs to the end of the document, matching the editor model.
+    if (line >= endLine) return false;
     body = state.getLines(startLine + 1, line, state.blkIndent, false);
-    nextLine = line < endLine ? line + 1 : endLine;
+    nextLine = line + 1;
   }
+  if (silent) return true;
   const token = state.push('ink_math_block', 'math', 0);
   token.markup = delim;
   token.content = body;
@@ -260,7 +260,8 @@ export function renderDocumentHTML(raw, options = {}) {
   });
   let out = reinsertSeeds(DOMPurify.sanitize(md.render(source, env), SANITIZE_CONFIG), env);
   footnoteDefs.forEach(({ key, number, body, inner }) => {
-    out = out.replaceAll(key, `<div class="ink-fn" id="ink-fn-${number}"><span class="ink-fn-num">${number}.</span> ${inner || md.utils.escapeHtml(body)}</div>`);
+    const entry = `<div class="ink-fn" id="ink-fn-${number}"><span class="ink-fn-num">${number}.</span> ${inner || md.utils.escapeHtml(body)}</div>`;
+    out = out.replaceAll(`<p>${key}</p>`, entry).replaceAll(key, entry);
   });
   return out;
 }
