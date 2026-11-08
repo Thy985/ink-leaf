@@ -89,6 +89,13 @@ test('readImage resolves encoded names, strips query strings and returns a data 
   const direct = await f.readImage(d, '我的 猫.png');
   assert.equal(direct.dataUrl, result.dataUrl);
 });
+test('readImage rejects a directory symlink or junction that resolves outside the document directory', async t => {
+  const base = await temp(t);
+  const outside = await temp(t);
+  await fs.writeFile(path.join(outside, 'secret.png'), PNG);
+  await fs.symlink(outside, path.join(base, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(f.readImage(base, 'link/secret.png'), /图片必须位于文档目录内/);
+});
 test('writeHtmlFile writes atomically and refuses other extensions', async t => {
   const d = await temp(t);
   const p = path.join(d, '导出.html');

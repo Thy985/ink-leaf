@@ -92,20 +92,35 @@ async function readImage(baseDir, relativePath, io = fsp) {
   try { decoded = decodeURIComponent(withoutQuery); } catch { /* keep the raw path */ }
   if (path.isAbsolute(decoded) || /^[a-z][a-z0-9+.-]*:/i.test(decoded)) throw new Error('仅支持相对于文档目录的图片路径');
   if (!baseDir) throw new Error('先保存文档，才能加载本地图片');
-  const target = path.resolve(baseDir, decoded);
-  const contained = path.relative(baseDir, target);
+  const resolvedBase = path.resolve(baseDir);
+  const target = path.resolve(resolvedBase, decoded);
+  const contained = path.relative(resolvedBase, target);
   if (!contained || contained === '..' || contained.startsWith(`..${path.sep}`) || path.isAbsolute(contained)) throw new Error('图片必须位于文档目录内');
   const extension = path.extname(target).toLowerCase();
   if (!IMAGE_EXTENSIONS.has(extension)) throw new Error('不支持的图片格式');
-  let stat;
-  try { stat = await io.stat(target); }
-  catch (error) { if (error.code === 'ENOENT') throw new Error('找不到图片文件'); throw error; }
-  if (!stat.isFile()) throw new Error('图片路径不是文件');
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error('图片超过 5 MB 限制');
-  const data = await io.readFile(target);
-  const mime = sniffImageType(extension, data);
-  if (!mime) throw new Error('图片内容与扩展名不符');
-  return { dataUrl: `data:${mime};base64,${data.toString('base64')}`, filepath: target };
+  let handle;
+  try {
+    const [realBase, realTarget] = await Promise.all([io.realpath(resolvedBase), io.realpath(target)]);
+    const realContained = path.relative(realBase, realTarget);
+    if (!realContained || realContained === '..' || realContained.startsWith(`..${path.sep}`) || path.isAbsolute(realContained)) {
+      throw new Error('图片必须位于文档目录内');
+    }
+    const noFollow = process.platform !== 'win32' && typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+    handle = await io.open(realTarget, fs.constants.O_RDONLY | noFollow);
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('图片路径不是文件');
+    if (stat.size > MAX_IMAGE_BYTES) throw new Error('图片超过 5 MB 限制');
+    const data = await handle.readFile();
+    if (data.length > MAX_IMAGE_BYTES) throw new Error('图片超过 5 MB 限制');
+    const mime = sniffImageType(extension, data);
+    if (!mime) throw new Error('图片内容与扩展名不符');
+    return { dataUrl: `data:${mime};base64,${data.toString('base64')}`, filepath: target };
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error('找不到图片文件');
+    throw error;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
 }
 
 // Exported HTML files share the document pipeline's atomic-write discipline but use their

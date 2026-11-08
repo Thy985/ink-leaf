@@ -516,6 +516,17 @@ test('does not number references inside a link destination, angle target or disp
   assert.equal(spaced.footnotes.get('d').number, 1);
 });
 
+test('counts a footnote reference inside dollar text rejected by the inline-math renderer', () => {
+  const blocks = parseBlocks('正文 $ [^a]$\n\n[^a]: 说明');
+  const ctx = buildDocContext(blocks);
+  const paragraph = blocks.find((block) => block.type === 'paragraph');
+  const definition = blocks.find((block) => block.type === 'footnoteDef');
+  assert.equal(ctx.footnotes.get('a').number, 1);
+  assert.equal(ctx.byNumber.get(1).refBlockId, paragraph.id);
+  assert.equal(ctx.byNumber.get(1).defBlockId, definition.id);
+  assert.match(renderInline(paragraph.raw, ctx), /href="#ink-fn-1"/);
+});
+
 test('carries a link definition title onto the resolved anchor', () => {
   const blocks = parseBlocks('读 [文档][docs]\n\n[docs]: https://example.com/docs "官方文档"\n');
   const html = renderInline(blocks[0].raw, buildDocContext(blocks));

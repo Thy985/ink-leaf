@@ -120,20 +120,46 @@ function normalizeLabel(label){return String(label??'').trim().toLowerCase();}
 // so each strip mirrors a swallowing rule of the two renderers: code, math, raw HTML, autolink and
 // link destinations. Over-stripping hides a live reference; under-stripping advertises one that
 // never appears and leaves a definition pointing at an invisible marker.
+function stripInlineDollarMath(text) {
+  let result = '', pos = 0;
+  while (pos < text.length) {
+    if (text[pos] !== '$' || text[pos + 1] === '$' || !text[pos + 1] || /\s/.test(text[pos + 1])) {
+      result += text[pos++];
+      continue;
+    }
+    let openingSlashes = 0;
+    for (let j = pos - 1; j >= 0 && text[j] === '\\'; j--) openingSlashes++;
+    if (openingSlashes % 2) { result += text[pos++]; continue; }
+    let end = pos + 1;
+    while ((end = text.indexOf('$', end)) >= 0) {
+      let closingSlashes = 0;
+      for (let j = end - 1; j >= 0 && text[j] === '\\'; j--) closingSlashes++;
+      if (closingSlashes % 2 === 0) break;
+      end++;
+    }
+    if (end < 0 || end === pos + 1 || text.slice(pos + 1, end).includes('\n') ||
+        /\s/.test(text[end - 1]) || /\d/.test(text[end + 1] || '')) {
+      result += text[pos++];
+      continue;
+    }
+    pos = end + 1;
+  }
+  return result;
+}
 function scannableText(block){
   if(block.type==='linkDef'||block.type==='code'||block.type==='math'||block.type==='html'||block.type==='blank')return '';
   // A definition's own `[^label]:` marker is not a reference, but its body may hold one.
   const raw=String(block.raw??'');
   const text=block.type==='footnoteDef'?raw.replace(/^ {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*/,''):raw;
-  return text
+  const scannable = text
     .replace(/(`+)[\s\S]*?\1/g,'')
     .replace(/\$\$[\s\S]*?\$\$/g,'')
     .replace(/\\\[[^\s][\s\S]*?\\\]/g,'')
     .replace(/\\\([^\s][\s\S]*?\\\)/g,'')
-    .replace(/\$[^$\n]*\$/g,'')
     .replace(/(?:https?:\/\/|mailto:)[^\s]*/gi,'')
     .replace(/\]\([^)\s]*\)/g,']')
     .replace(/<[!/A-Za-z/][^<>\n]*>/g,'');
+  return stripInlineDollarMath(scannable);
 }
 
 export function buildDocContext(blocks){
