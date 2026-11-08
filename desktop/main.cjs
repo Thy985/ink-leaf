@@ -9,6 +9,8 @@ const { pathToFileURL } = require('node:url');
 const files = require('./files.cjs');
 const folders = require('./folders.cjs');
 const updates = require('./update.cjs');
+const { validBareName, safeDocumentName } = require('./names.cjs');
+const { sameDesktopState } = require('./state.cjs');
 
 const MAX_TEXT = files.MAX_BYTES;
 const ENTRY = path.resolve(__dirname, '../web/index.html');
@@ -162,7 +164,7 @@ async function savePath(snapshot, filePath, saveAs = false) {
   return resultFor(snapshot.text, path.basename(filePath), filePath, snapshot.text, false);
 }
 async function saveAsPath(snapshot) {
-  const defaultPath = path.join(app.getPath('documents'), snapshot.filename.toLowerCase().endsWith('.md') || snapshot.filename.includes('.') ? snapshot.filename : `${snapshot.filename}.md`);
+  const defaultPath = path.join(app.getPath('documents'), safeDocumentName(snapshot.filename));
   const picked = await dialog.showSaveDialog(win, { title: '另存为', defaultPath, filters: [{ name: 'Markdown/文本', extensions: ['md', 'markdown', 'txt'] }] });
   if (picked.canceled || !picked.filePath) return { canceled: true };
   files.assertSupportedPath(picked.filePath);
@@ -227,7 +229,7 @@ async function perform(action, rawSnapshot = state, params = null) {
     if (updated === target) return scanRegistered(folderPath);
     let exists = null;
     try { exists = await fsp.stat(updated); } catch (error) { if (error.code !== 'ENOENT') throw new Error(`重命名失败：${error.message}`); }
-    if (exists) throw new Error('同名文件已存在');
+    if (exists && (process.platform !== 'win32' || target.toLowerCase() !== updated.toLowerCase())) throw new Error('同名文件已存在');
     try { await fsp.rename(target, updated); } catch (error) { throw new Error(`重命名失败：${error.message}`); }
     const renamedOpenDocument = opened?.filepath === target;
     if (renamedOpenDocument) {
@@ -270,11 +272,8 @@ function folderRelTarget(folderPath, rel) {
   if (!target) throw new Error('文件必须位于已导入文件夹内');
   return target;
 }
-function validBareName(name) {
-  const value = typeof name === 'string' ? name.trim() : '';
-  if (!value || /[\\/\0]/.test(value) || !files.ALLOWED_EXTENSIONS.has(path.extname(value).toLowerCase())) throw new Error('名称必须是 .md、.markdown 或 .txt 文件名');
-  return value;
-}
+
+
 async function scanRegistered(folderPath) {
   const scan = await folders.scanFolder(folderPath, fsp, files.ALLOWED_EXTENSIONS, files.MAX_BYTES);
   return { folder: folderPath, ...scan };
@@ -327,7 +326,7 @@ app.whenReady().then(async () => {
     if (!isTrusted(event)) return { canceled: true };
     try {
       if (typeof html !== 'string' || !html || Buffer.byteLength(html, 'utf8') > files.MAX_BYTES) throw new Error('导出内容超过 10 MB 限制');
-      const defaultPath = path.join(app.getPath('documents'), (state.filename || '未命名').replace(/\.(md|markdown|txt)$/i, '') + '.html');
+      const defaultPath = path.join(app.getPath('documents'), safeDocumentName(state.filename).replace(/\.(md|markdown|txt)$/i, '') + '.html');
       const picked = await dialog.showSaveDialog(win, { title: '导出 HTML', defaultPath, filters: [{ name: 'HTML 文档', extensions: ['html', 'htm'] }] });
       if (picked.canceled || !picked.filePath) return { canceled: true };
       const written = await files.writeHtmlFile(picked.filePath, html);
@@ -356,7 +355,7 @@ app.whenReady().then(async () => {
     let tempHtml = null;
     try {
       if (typeof html !== 'string' || !html || Buffer.byteLength(html, 'utf8') > files.MAX_BYTES) throw new Error('导出内容超过 10 MB 限制');
-      const defaultPath = path.join(app.getPath('documents'), (state.filename || '未命名').replace(/\.(md|markdown|txt)$/i, '') + '.pdf');
+      const defaultPath = path.join(app.getPath('documents'), safeDocumentName(state.filename).replace(/\.(md|markdown|txt)$/i, '') + '.pdf');
       const picked = await dialog.showSaveDialog(win, { title: '导出 PDF', defaultPath, filters: [{ name: 'PDF 文档', extensions: ['pdf'] }] });
       if (picked.canceled || !picked.filePath) return { canceled: true };
       if (path.extname(picked.filePath).toLowerCase() !== '.pdf') throw new Error('仅支持导出为 .pdf 文件');
@@ -375,7 +374,7 @@ app.whenReady().then(async () => {
       if (tempHtml) fs.unlink(tempHtml, () => {});
     }
   });
-  ipcMain.on('desktop:state', (event, next) => { if (!isTrusted(event) || closing) return; try { const checked = assertSnapshot(next); state = { ...state, ...checked }; if (state.dirty) scheduleRecovery(); else clearRecovery().catch(() => {}); if (pendingAfterRestore) { pendingAfterRestore = false; setImmediate(() => sendCommand('openPending')); } } catch {} });
+  ipcMain.on('desktop:state', (event, next) => { if (!isTrusted(event) || closing) return; try { if (sameDesktopState(next, state)) return; const checked = assertSnapshot(next); state = { ...state, ...checked }; if (state.dirty) scheduleRecovery(); else clearRecovery().catch(() => {}); if (pendingAfterRestore) { pendingAfterRestore = false; setImmediate(() => sendCommand('openPending')); } } catch {} });
   createWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
