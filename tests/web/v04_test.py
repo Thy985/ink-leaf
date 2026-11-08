@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 from playwright.sync_api import sync_playwright
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -28,21 +29,18 @@ def wait_server():
 
 def boot(page):
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def load(page, raw):
-    page.locator("#file-input").set_input_files(
-        {"name": "v04.md", "mimeType": "text/markdown", "buffer": raw.encode("utf-8")}
-    )
-    page.wait_for_function("(value) => window.inkstone.getMarkdown() === value", arg=raw)
+    ink_load(page, raw, name="v04.md")
 
 
 def markdown(page):
-    return page.evaluate("window.inkstone.getMarkdown()")
+    return page.evaluate("() => window.inkstone.getMarkdown()")
 
 
 def blur(page):
@@ -160,7 +158,7 @@ with sync_playwright() as playwright:
         raw = '```html\n</code><img src=x onerror="window.BAD=1"><script>window.BAD=2</script>\n```\n'
         load(page, raw)
         blur(page)
-        assert not page.evaluate("Boolean(window.BAD)")
+        assert not page.evaluate("() => Boolean(window.BAD)")
         assert page.locator("#editor .block-preview img, #editor .block-preview script").count() == 0
         assert markdown(page) == raw
         cases.append("代码内容 XSS 防护")
@@ -196,7 +194,7 @@ with sync_playwright() as playwright:
 
         load(page, "段落\n---\n\n---\n")
         blur(page)
-        blocks = page.evaluate("window.inkstone.getBlocks()")
+        blocks = page.evaluate("() => window.inkstone.getBlocks()")
         types = [block["type"] for block in blocks]
         assert blocks[0]["type"] == "heading" and blocks[0]["level"] == 2
         assert "hr" in types
@@ -224,7 +222,7 @@ with sync_playwright() as playwright:
         assert markdown(page) == "Title\n---"
         page.keyboard.insert_text("x")
         assert markdown(page) == "Titlex\n---", repr(markdown(page))
-        blocks = page.evaluate("window.inkstone.getBlocks()")
+        blocks = page.evaluate("() => window.inkstone.getBlocks()")
         assert blocks[0]["type"] == "heading" and blocks[0]["style"] == "setext"
         assert blocks[0]["level"] == 2
         cases.append("Setext 标题格式化后继续输入仍保持 Setext")
@@ -235,7 +233,7 @@ with sync_playwright() as playwright:
         select_text(page, 0, 0, len("Title"))
         page.locator('[data-command="h1"]').click()
         assert markdown(page) == "Title\n===", repr(markdown(page))
-        blocks = page.evaluate("window.inkstone.getBlocks()")
+        blocks = page.evaluate("() => window.inkstone.getBlocks()")
         assert blocks[0]["type"] == "heading" and blocks[0]["style"] == "setext"
         assert blocks[0]["level"] == 1
         cases.append("Setext 标题内选中文本切换 H1/H2")
@@ -245,7 +243,7 @@ with sync_playwright() as playwright:
         load(page, "para\nnext")
         caret(page, 0, len("para\n"))
         page.locator('[data-command="hr"]').click()
-        blocks = page.evaluate("window.inkstone.getBlocks()")
+        blocks = page.evaluate("() => window.inkstone.getBlocks()")
         assert any(block["type"] == "hr" for block in blocks), blocks
         assert markdown(page) == "para\n***\n\nnext", repr(markdown(page))
         cases.append("分割线命令插入 *** 而不是 Setext 下划线")
@@ -320,7 +318,7 @@ with sync_playwright() as playwright:
         print("PASS", cases[-1], flush=True)
 
         page.set_viewport_size({"width": 393, "height": 844})
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
         page.locator("#theme-toggle").click()
         assert page.locator("html").get_attribute("data-theme") == "dark"
         cases.append("移动端无横向溢出与深色主题")

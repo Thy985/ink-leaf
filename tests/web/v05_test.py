@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 from playwright.sync_api import sync_playwright
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -28,21 +29,18 @@ def wait_server():
 
 def boot(page):
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def load(page, raw):
-    page.locator("#file-input").set_input_files(
-        {"name": "v05.md", "mimeType": "text/markdown", "buffer": raw.encode("utf-8")}
-    )
-    page.wait_for_function("(value) => window.inkstone.getMarkdown() === value", arg=raw)
+    ink_load(page, raw, name="v05.md")
 
 
 def markdown(page):
-    return page.evaluate("window.inkstone.getMarkdown()")
+    return page.evaluate("() => window.inkstone.getMarkdown()")
 
 
 def blur(page):
@@ -77,7 +75,7 @@ def caret(page, index=0, offset=None):
 
 
 def blocks(page):
-    return page.evaluate("window.inkstone.getBlocks().map(({type, label, body}) => ({type, label, body}))")
+    return page.evaluate("() => window.inkstone.getBlocks().map(({type, label, body}) => ({type, label, body}))")
 
 
 cases = []
@@ -221,7 +219,7 @@ with sync_playwright() as playwright:
         raw = "危险 [x][evil]\n\n[evil]: javascript:window.BAD=1\n"
         load(page, raw)
         blur(page)
-        assert page.evaluate("Boolean(window.BAD)") is False
+        assert page.evaluate("() => Boolean(window.BAD)") is False
         assert page.locator("#editor a[href^='javascript:']").count() == 0
         assert "[x][evil]" in page.locator("#editor .paragraph").text_content()
         assert markdown(page) == raw
@@ -234,7 +232,7 @@ with sync_playwright() as playwright:
         blur(page)
         page.locator("#editor .footnote-def").click()
         blur(page)
-        assert page.evaluate("Boolean(window.BAD)") is False
+        assert page.evaluate("() => Boolean(window.BAD)") is False
         assert page.locator("#editor .footnote-def img, #editor .footnote-def script").count() == 0
         assert "正文" in page.locator("#editor .footnote-def").inner_text()
         assert markdown(page) == raw
@@ -317,7 +315,7 @@ with sync_playwright() as playwright:
         # --- mobile width and dark theme ---
         page.set_viewport_size({"width": 393, "height": 844})
         page.wait_for_timeout(120)
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
         page.locator("#theme-toggle").click()
         assert page.locator("html").get_attribute("data-theme") == "dark"
         cases.append("393px 无横向溢出与深色主题")

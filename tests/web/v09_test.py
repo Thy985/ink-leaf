@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from inktest import app_ready
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -28,14 +29,14 @@ def wait_server():
 
 def boot(page):
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def sidebar_transform(page):
-    return page.evaluate("getComputedStyle(document.querySelector('.sidebar')).transform")
+    return page.evaluate("() => getComputedStyle(document.querySelector('.sidebar')).transform")
 
 
 cases = []
@@ -73,7 +74,7 @@ with sync_playwright() as playwright:
 
         # --- focus mode keeps the toolbar and its quick actions usable ---
         page.locator("#focus-toggle").click()
-        assert page.evaluate("document.body.classList.contains('focus-mode')")
+        assert page.evaluate("() => document.body.classList.contains('focus-mode')")
         assert page.locator(".toolbar").is_visible(), "toolbar must stay visible in focus mode"
         page.locator("#find-toggle").click()
         assert page.locator("#find-panel").is_visible()
@@ -85,9 +86,9 @@ with sync_playwright() as playwright:
         page.locator("#syntax-toggle").click()
         page.keyboard.press("Escape")
         assert not page.locator("#syntax-dialog").evaluate("d => d.open")
-        assert page.evaluate("document.body.classList.contains('focus-mode')"), "dialog Esc must not exit focus mode"
+        assert page.evaluate("() => document.body.classList.contains('focus-mode')"), "dialog Esc must not exit focus mode"
         page.keyboard.press("Escape")
-        assert not page.evaluate("document.body.classList.contains('focus-mode')")
+        assert not page.evaluate("() => document.body.classList.contains('focus-mode')")
         cases.append("沉浸模式工具栏常驻，查找/帮助/语法可用且 Esc 语义正确")
         print("PASS", cases[-1], flush=True)
 
@@ -118,7 +119,7 @@ with sync_playwright() as playwright:
         page.wait_for_timeout(350)
         assert sidebar_transform(page) != "none", "unpinning lets the outline hide again"
         page.locator("#focus-toggle").click()
-        assert not page.evaluate("document.body.classList.contains('focus-mode')")
+        assert not page.evaluate("() => document.body.classList.contains('focus-mode')")
         cases.append("沉浸模式大纲把手：悬停呼出、移开收起、点击固定与解除")
         print("PASS", cases[-1], flush=True)
         page.close()
@@ -129,7 +130,7 @@ with sync_playwright() as playwright:
         mobile.on("pageerror", lambda error: errors.append(str(error)))
         boot(mobile)
         mobile.locator("#focus-toggle").click()
-        assert mobile.evaluate("document.body.classList.contains('focus-mode')")
+        assert mobile.evaluate("() => document.body.classList.contains('focus-mode')")
         assert not mobile.locator(".toolbar").is_visible(), "touch focus mode must keep the toolbar hidden"
         assert not mobile.locator(".sidebar").is_visible()
         assert not mobile.locator("#outline-peek").is_visible(), "touch mode has no outline handle"

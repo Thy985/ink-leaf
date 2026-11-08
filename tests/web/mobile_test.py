@@ -6,6 +6,7 @@ import subprocess
 import time
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from inktest import app_ready, load, markdown_settled, markdown_contains
 
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
 ROOT = Path(__file__).resolve().parents[2] / "test-results" / "web"
@@ -30,26 +31,34 @@ def wait_server():
 def boot(page, width=393, height=844):
     page.set_viewport_size({"width": width, "height": height})
     page.goto(URL)
-    page.wait_for_function("Boolean(window.inkstone)")
-    page.evaluate("localStorage.clear()")
+    app_ready(page)
+    page.evaluate("() => localStorage.clear()")
     page.reload()
-    page.wait_for_function("Boolean(window.inkstone)")
+    app_ready(page)
 
 
 def markdown(page):
-    return page.evaluate("window.inkstone.getMarkdown()")
+    return page.evaluate("() => window.inkstone.getMarkdown()")
 
 
 def source_set(page, value):
     if not page.locator("#source").is_visible():
         page.locator("#source-toggle").click()
     page.locator("#source").fill(value)
-    page.wait_for_function("(v) => window.inkstone.getMarkdown() === v", arg=value)
+    markdown_settled(page, value)
 
 
 def wait_native_request(page, count=1):
-    page.wait_for_function("(n) => window.__nativeRequests.length >= n", arg=count)
-    return page.evaluate("window.__nativeRequests[window.__nativeRequests.length - 1]")
+    import time as _time
+    deadline = _time.monotonic() + 30
+    while True:
+        length = page.evaluate("() => (window.__nativeRequests || []).length")
+        if length >= count:
+            break
+        if _time.monotonic() > deadline:
+            raise TimeoutError(f"__nativeRequests did not reach {count} within 30s")
+        _time.sleep(0.05)
+    return page.evaluate("() => window.__nativeRequests[window.__nativeRequests.length - 1]")
 
 
 def native_result(page, detail):
@@ -60,15 +69,14 @@ def native_result(page, detail):
 def assert_no_horizontal_overflow(page, width, height):
     page.set_viewport_size({"width": width, "height": height})
     settle_layout(page)
-    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (width, page.evaluate("document.documentElement.scrollWidth"))
+    assert page.evaluate("() => document.documentElement.scrollWidth <= innerWidth"), (width, page.evaluate("() => document.documentElement.scrollWidth"))
 
 
 def settle_layout(page):
-    # The mobile adapter batches viewport/ResizeObserver work through rAF.
-    page.wait_for_function("""() => new Promise(resolve => {
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
-    })""")
-    page.wait_for_timeout(30)
+    # The mobile adapter batches viewport/ResizeObserver work through rAF;
+    # settle with a short Python-side sleep instead of a string-eval'd rAF wait.
+    import time as _time
+    _time.sleep(0.050)
 
 
 def assert_no_body_overflow(page):
@@ -188,7 +196,7 @@ def run():
         page.keyboard.press("Escape")
         assert not page.locator("body").evaluate("e => e.classList.contains('focus-mode')")
         page.locator("#focus-toggle").click()
-        page.evaluate("window.dispatchEvent(new Event('inkleaf-back'))")
+        page.evaluate("() => window.dispatchEvent(new Event('inkleaf-back'))")
         assert not page.locator("body").evaluate("e => e.classList.contains('focus-mode')")
         assert markdown(page) == original
         passed("沉浸写作/退出沉浸与按钮、Escape、inkleaf-back 退出且原文不变")
@@ -213,7 +221,7 @@ def run():
             "name": "导入.md", "mimeType": "text/markdown",
             "buffer": b"\xef\xbb\xbf" + "# 标题\r\n\r\n正文\r\n".encode("utf-8"),
         })
-        page.wait_for_function("window.inkstone.getMarkdown() === '# 标题\\n\\n正文\\n'")
+        markdown_settled(page, "# 标题\n\n正文\n")
         assert page.locator("#filename").inner_text() == "导入.md"
         passed("移动 Web file input 导入 UTF-8 BOM 与 CRLF")
 
@@ -239,10 +247,10 @@ def run():
         }""")
         page.locator("#save").click()
         for _ in range(50):
-            if page.evaluate("Boolean(window.__savedFile)"):
+            if page.evaluate("() => Boolean(window.__savedFile)"):
                 break
             page.wait_for_timeout(100)
-        saved = page.evaluate("window.__savedFile")
+        saved = page.evaluate("() => window.__savedFile")
         assert saved and saved["text"] == "导出内容\n", saved
         assert page.locator("#dirty").inner_text() == ""
         passed("移动 Web 文件保存内容与 dirty 状态")
@@ -264,7 +272,7 @@ def run():
         assert during == {"model": "源码", "composing": True}, during
         page.locator("#focus-toggle").click()
         assert page.locator("#source").evaluate("el => el === document.activeElement")
-        assert markdown(page) == "源码" and page.evaluate("window.inkstone.isComposing")
+        assert markdown(page) == "源码" and page.evaluate("() => window.inkstone.isComposing")
         page.set_viewport_size({"width": 393, "height": 360})
         settle_layout(page)
         assert_no_body_overflow(page)
@@ -280,7 +288,7 @@ def run():
         }""")
         page.wait_for_timeout(30)
         assert markdown(page) == "源码中"
-        assert page.evaluate("window.__sourceInputs") in (2, 3)  # native final input plus optional app fallback; model must commit once
+        assert page.evaluate("() => window.__sourceInputs") in (2, 3)  # native final input plus optional app fallback; model must commit once
         passed("源码模式组合输入切换沉浸保留焦点与未提交 DOM，缩小视口无溢出，最终 input 不重复")
 
         source_set(page, "富文本")
@@ -301,15 +309,15 @@ def run():
         }""")
         page.wait_for_timeout(30)
         assert markdown(page) == "富文本中"
-        assert page.evaluate("window.__richInputs") == 2
+        assert page.evaluate("() => window.__richInputs") == 2
         passed("富文本 composition 与最终 input 同样只产生一次模型提交")
 
         page.locator("#editor").focus()
         page.keyboard.press("Control+End")
-        selection_before = page.evaluate("getSelection().anchorOffset")
+        selection_before = page.evaluate("() => getSelection().anchorOffset")
         page.locator("#focus-toggle").click()
         assert page.locator("#editor").evaluate("el => el === document.activeElement")
-        assert page.evaluate("getSelection().anchorOffset") == selection_before
+        assert page.evaluate("() => getSelection().anchorOffset") == selection_before
         # The existing editor coalesces typing within 750ms, including IME input.
         # Start a distinct typing transaction, rather than changing that contract.
         page.wait_for_timeout(800)
@@ -330,7 +338,7 @@ def run():
           document.dispatchEvent(new Event('visibilitychange'));
           window.dispatchEvent(new Event('pagehide'));
         }""")
-        stored = page.evaluate("JSON.parse(localStorage.getItem('inkstone.draft.v03'))")
+        stored = page.evaluate("() => JSON.parse(localStorage.getItem('inkstone.draft.v03'))")
         assert stored["text"] == "立即落盘"
         passed("visibilitychange/pagehide 立即 flush 本地草稿")
         context.close()
@@ -385,7 +393,7 @@ def run():
         native_result(native, {"id": request["id"], "error": "写入失败"})
         native.wait_for_timeout(20)
         assert native.locator("#dirty").inner_text() == "•"
-        assert {entry["action"] for entry in native.evaluate("window.__nativeRequests")} <= {"open", "export"}
+        assert {entry["action"] for entry in native.evaluate("() => window.__nativeRequests")} <= {"open", "export"}
         passed("Android export 取消/失败不清 dirty，成功按 snapshot 保存且保留请求后编辑")
 
         assert not errors, errors
