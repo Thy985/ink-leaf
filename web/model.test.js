@@ -152,6 +152,29 @@ test('keeps single-line math and HTML boundaries', () => {
   assert.equal(serialize(blocks), source);
 });
 
+test('keeps multiline bracket display math and does not swallow an unclosed paragraph', () => {
+  const closed = String.raw`\[
+x^2
+\]
+
+after`;
+  assert.deepEqual(parseBlocks(closed).map(({ type }) => type), ['math', 'blank', 'paragraph']);
+  const unclosed = String.raw`\[
+not math
+
+after paragraph`;
+  assert.deepEqual(parseBlocks(unclosed).map(({ type }) => type), ['paragraph', 'blank', 'paragraph']);
+});
+
+test('falls back to an ordinary paragraph for an unclosed line-initial bracket escape', () => {
+  const source = String.raw`\[ not display math
+still ordinary text`;
+  const blocks = parseBlocks(source);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].type, 'paragraph');
+  assert.equal(blocks[0].raw, source);
+});
+
 test('bounds unclosed HTML at blank lines but lets script and style reach closing tags', () => {
   const source = '<div>\ninside\n\nafter\n<script>\n\nalert(1)\n</script>\n<style>\n.x{}\n</style>';
   const blocks = parseBlocks(source);
