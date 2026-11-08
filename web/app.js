@@ -1554,7 +1554,6 @@ function renderTree() {
   if (scan.truncated) { const li = document.createElement('li'); li.textContent = '扫描条目过多，结果已截断（最多 6 层、2000 项、300 个文档）。'; excludedList.append(li); excludedWrap.hidden = false; }
 }
 async function setActiveFolder(folderPath) {
-  if (desktopBusy) { toast('正在扫描，请稍候再切换文件夹'); return; }
   folderState.activeFolder = folderPath;
   folderState.lastScan = null;
   renderChips();

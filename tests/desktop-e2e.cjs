@@ -87,7 +87,7 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   await fs.writeFile(copy,'外部修改');await queue('message',2);await cmd('save');assert.equal(await fs.readFile(copy,'utf8'),'外部修改');ok('外部修改冲突选择取消，不覆盖磁盘内容');
   await queue('message',0);await cmd('save');assert((await fs.readFile(copy,'utf8')).includes('# 保留编辑'));ok('冲突明确选择覆盖后才写入');
   await edit('不能丢失的文字');await queue('message',2);await cmd('new');await assertMD('不能丢失的文字');ok('新建的未保存提醒可取消');
-  const invalid=path.join(fixtures,'invalid.md');await fs.writeFile(invalid,Buffer.from([0xff,0xfe,0x31]));await open(invalid,false);await assertMD('不能丢失的文字');ok('非法 UTF-8 打开失败保留当前内容');
+  const invalid=path.join(fixtures,'invalid.md');await fs.writeFile(invalid,Buffer.from([0xff,0xfe,0x31]));await open(invalid,false);await assertMD('不能丢失的文字');const invalidToast=await page.locator('#toast').textContent();assert(invalidToast.includes('UTF-8'),invalidToast);assert(!invalidToast.includes('Error invoking remote method'),invalidToast);assert(!invalidToast.includes('Error:'),invalidToast);ok('非法 UTF-8 打开失败保留当前内容且 toast 不泄露 Electron 英文前缀');
   await queue('message',1);await cmd('new');await assertMD('');ok('明确不保存后才新建空白文档');
   const clean=path.join(fixtures,'新建保存.md');await edit('# 新文件');await queue('save',{canceled:false,filePath:clean});await cmd('save');assert.equal(await fs.readFile(clean,'utf8'),'# 新文件');ok('未命名文档第一次保存弹系统保存框');
   const complex='# 墨页 · 只管落笔\n\n| 左 | 中 | 右 |\n| :--- | :---: | ---: |\n| **粗体** | a\\|b | $x^2$ |\n\n---\n\n- 父项\n  - [x] 子项\n\n$$\nE=mc^2\n$$\n\n<details>\n<summary>展开</summary>\n<p><mark>高亮</mark></p>\n</details>\n\n```js\nconst desktop = true;\n```\n\n段落里的出处[^1] 与 [文档][docs]\n\n[^1]: 来源一\n[docs]: https://example.com/docs\n';
@@ -112,6 +112,13 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   assert((await page.locator('#editor .ink-image-error .ink-image-note').first().textContent()).includes('文档目录内'));
   assert((await page.locator('#editor .ink-image-error .ink-image-note').nth(1).textContent()).includes('找不到'));
   await assertMD(imageDoc);ok('本地图片经桥接读取，越界与缺失被拒绝');
+  // #20: saving the same relative image reference into another directory must
+  // clear the document-directory cache and reload the image through Electron.
+  const dirA=path.join(temp,'图片目录A');const dirB=path.join(temp,'图片目录B');await fs.mkdir(dirA);await fs.mkdir(dirB);
+  const imageDocPath=path.join(dirA,'换目录.md');await fs.writeFile(imageDocPath,'# 换目录\n\n![同名](同名.png)\n');
+  await fs.writeFile(path.join(dirA,'同名.png'),noisePng(1,1));await fs.writeFile(path.join(dirB,'同名.png'),noisePng(2,2));
+  await open(imageDocPath);await page.waitForSelector('#editor .ink-image-ready img');assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),1);
+  const imageDocB=path.join(dirB,'换目录.md');await saveAs(imageDocB);await page.waitForSelector('#editor .ink-image-ready img');await page.waitForFunction(()=>document.querySelector('#editor .ink-image-ready img')?.naturalWidth===2);assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),2);ok('另存为到新目录后同名相对图片经 Electron 桥接重新读取，未命中旧缓存');
   const exported=path.join(fixtures,'导出.html');
   await queue('save',{canceled:false,filePath:exported});
   await cmd('exportHtml');
