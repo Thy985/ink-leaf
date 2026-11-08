@@ -1,5 +1,6 @@
 import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobile.js';
 import { parseBlocks, serialize, renderInline, buildDocContext } from './model.js';
+import { shouldOpenExternalLink } from './link-activation.js';
 import { previewMarkdown, needsPreview, renderDocumentHTML } from './vendor/renderer.js';
 
 const $ = (id) => document.getElementById(id);
@@ -1220,7 +1221,7 @@ editor.addEventListener('click', (event) => {
       if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); flashAnchor(target); }
       return;
     }
-    if (event.ctrlKey || event.metaKey) window.open(link.href, '_blank', 'noopener,noreferrer');
+    if (shouldOpenExternalLink(event)) window.open(link.href, '_blank', 'noopener,noreferrer');
   }
 });
 editor.addEventListener('keydown', (event) => {

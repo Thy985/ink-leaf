@@ -229,11 +229,16 @@ async function perform(action, rawSnapshot = state, params = null) {
     try { exists = await fsp.stat(updated); } catch (error) { if (error.code !== 'ENOENT') throw new Error(`重命名失败：${error.message}`); }
     if (exists) throw new Error('同名文件已存在');
     try { await fsp.rename(target, updated); } catch (error) { throw new Error(`重命名失败：${error.message}`); }
-    if (opened?.filepath === target) opened = { ...opened, filepath: updated };
+    const renamedOpenDocument = opened?.filepath === target;
+    if (renamedOpenDocument) {
+      opened = { ...opened, filepath: updated };
+      state = { ...state, filepath: updated, filename: path.basename(updated) };
+    }
     const patch = { folders: sessionState.folders.map((f) => f.lastDoc === target ? { ...f, lastDoc: updated } : f) };
     if (sessionState.lastDoc === target) patch.lastDoc = updated;
     sessionState = await updateSession(patch);
-    return scanRegistered(folderPath);
+    const scan = await scanRegistered(folderPath);
+    return { ...scan, ...(renamedOpenDocument ? { filepath: updated, filename: path.basename(updated) } : {}) };
   }
   if (action === 'folderCreate') {
     const folderPath = requireFolder(params?.folder);
