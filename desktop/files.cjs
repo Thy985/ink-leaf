@@ -51,11 +51,16 @@ function fingerprint(stat, data) {
   return { size: stat.size, mtimeMs: stat.mtimeMs, hash: crypto.createHash('sha256').update(data).digest('hex') };
 }
 async function currentFingerprint(filePath, io = fsp) {
-  try { const stat = await io.stat(filePath); const data = await io.readFile(filePath); return fingerprint(stat, data); }
-  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  try {
+    const stat = await io.stat(filePath);
+    if (!stat.isFile()) throw new Error('所选路径不是文件');
+    if (stat.size > MAX_BYTES) return { size: stat.size, mtimeMs: stat.mtimeMs, hash: null, oversized: true };
+    const data = await io.readFile(filePath);
+    return fingerprint(stat, data);
+  } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 function sameFingerprint(a, b) {
-  return !!a && !!b && a.size === b.size && a.mtimeMs === b.mtimeMs && a.hash === b.hash;
+  return !!a && !!b && !a.oversized && !b.oversized && a.size === b.size && a.hash === b.hash;
 }
 async function writeDocumentAtomic(filePath, text, options = {}, io = fsp) {
   assertSupportedPath(filePath);
@@ -63,6 +68,7 @@ async function writeDocumentAtomic(filePath, text, options = {}, io = fsp) {
   const eol = options.eol === 'crlf' ? '\r\n' : '\n';
   const bom = options.bom ? '\ufeff' : '';
   const data = Buffer.from(bom + normalize(text).replace(/\n/g, eol), 'utf8');
+  if (data.length > MAX_BYTES) throw new Error('文档超过 10 MB 限制');
   const dir = path.dirname(filePath);
   const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(6).toString('hex')}.tmp`);
   try {

@@ -23,6 +23,23 @@ test('atomic save preserves BOM, CRLF and Chinese text', async t => {
   const d=await f.readDocument(p); assert.equal(d.text,'# 标题\n正文\n'); assert.equal(d.bom,true); assert.equal(d.eol,'crlf');
   assert.equal((await fs.readdir(path.dirname(p))).length,1);
 });
+test('CRLF expansion is checked against the final on-disk byte limit', async t => {
+  const d = await temp(t);
+  const text = 'x'.repeat(f.MAX_BYTES - 1) + '\n';
+  await assert.rejects(f.writeDocumentAtomic(path.join(d, 'crlf.md'), text, { eol: 'crlf' }), /10 MB/);
+  assert.deepEqual(await fs.readdir(d), []);
+});
+test('oversized current fingerprint never reads file and is a conflict', async () => {
+  let reads = 0;
+  const io = { stat: async () => ({ isFile: () => true, size: f.MAX_BYTES + 1, mtimeMs: 1 }), readFile: async () => { reads += 1; throw new Error('must not read'); } };
+  const current = await f.currentFingerprint('/tmp/large.md', io);
+  assert.equal(current.oversized, true);
+  assert.equal(reads, 0);
+  assert.equal(f.sameFingerprint(current, { size: current.size, mtimeMs: 2, hash: 'x' }), false);
+});
+test('same fingerprint ignores mtime changes when size and hash match', async () => {
+  assert.equal(f.sameFingerprint({ size: 3, mtimeMs: 1, hash: 'same' }, { size: 3, mtimeMs: 2, hash: 'same' }), true);
+});
 test('external changes and deletion detected', async t => {
   const p=path.join(await temp(t),'doc.md'); await fs.writeFile(p,'old');
   const a=await f.currentFingerprint(p); assert(f.sameFingerprint(a,await f.currentFingerprint(p)));
