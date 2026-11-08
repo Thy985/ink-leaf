@@ -9,6 +9,8 @@ const { pathToFileURL } = require('node:url');
 const files = require('./files.cjs');
 const folders = require('./folders.cjs');
 const updates = require('./update.cjs');
+const { validBareName, safeDocumentName } = require('./names.cjs');
+const { sameDesktopState } = require('./state.cjs');
 
 const MAX_TEXT = files.MAX_BYTES;
 const ENTRY = path.resolve(__dirname, '../web/index.html');
@@ -20,7 +22,6 @@ let draftTimer;
 let draftVersion = 0;
 let recoveryQueue = Promise.resolve();
 let closing = false;
-let rendererUnavailable = false;
 let state = { text: '', filename: '未命名.md', dirty: false, savedText: '', composing: false, filepath: null };
 let opened = null; // { filepath, fingerprint, eol, bom }
 let sessionState = null; // { version, folders: [{ path, lastDoc, addedAt }], activeFolder, lastDoc }
@@ -58,10 +59,7 @@ async function readRecovery() {
     let filepath = null;
     if (data.filepath != null) { files.assertSupportedPath(data.filepath); filepath = data.filepath; }
     return { text: files.normalize(data.text), filename: typeof data.filename === 'string' ? data.filename : '未命名.md', filepath, fingerprint: data.fingerprint || null, eol: data.eol === 'crlf' ? 'crlf' : 'lf', bom: !!data.bom, savedText: typeof data.savedText === 'string' ? files.normalize(data.savedText) : '', dirty: true };
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw new Error(`恢复草稿读取失败，已保留原文件：${error.message}`);
-  }
+  } catch { return null; }
 }
 function resultFor(text, filename, filepath, savedText, dirty) { return { text, filename, filepath: filepath || null, savedText: savedText ?? text, ...(dirty === undefined ? {} : { dirty }) }; }
 
@@ -93,10 +91,7 @@ function sanitizeSession(data) {
 }
 async function readSession() {
   try { return sanitizeSession(JSON.parse(await fsp.readFile(sessionPath(), 'utf8'))); }
-  catch (error) {
-    if (error.code === 'ENOENT') return sanitizeSession(null);
-    throw new Error(`会话记录读取失败，已保留原记录：${error.message}`);
-  }
+  catch { return sanitizeSession(null); }
 }
 // Writes are serialized through the recovery queue; every caller awaits the result, so
 // read-modify-write cycles never interleave.
@@ -169,8 +164,7 @@ async function savePath(snapshot, filePath, saveAs = false) {
   return resultFor(snapshot.text, path.basename(filePath), filePath, snapshot.text, false);
 }
 async function saveAsPath(snapshot) {
-  const defaultName = safeDocumentName(snapshot.filename);
-  const defaultPath = path.join(app.getPath('documents'), defaultName);
+  const defaultPath = path.join(app.getPath('documents'), safeDocumentName(snapshot.filename));
   const picked = await dialog.showSaveDialog(win, { title: '另存为', defaultPath, filters: [{ name: 'Markdown/文本', extensions: ['md', 'markdown', 'txt'] }] });
   if (picked.canceled || !picked.filePath) return { canceled: true };
   files.assertSupportedPath(picked.filePath);
@@ -278,23 +272,8 @@ function folderRelTarget(folderPath, rel) {
   if (!target) throw new Error('文件必须位于已导入文件夹内');
   return target;
 }
-function isReservedWindowsName(value) {
-  const stem = value.replace(/\.[^.]*$/, '').toUpperCase();
-  return /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem);
-}
-function validBareName(name) {
-  const value = typeof name === 'string' ? name.trim() : '';
-  if (!value || value === '.' || value === '..' || /[\\/\0]/.test(value) || /[<>:"|?*\u0000-\u001f]/.test(value) || !files.ALLOWED_EXTENSIONS.has(path.extname(value).toLowerCase()) || isReservedWindowsName(value)) throw new Error('名称必须是安全的 .md、.markdown 或 .txt 文件名');
-  return value;
-}
-function safeDocumentName(name) {
-  const raw = typeof name === 'string' ? path.basename(name).trim() : '';
-  const cleaned = raw.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim();
-  const ext = path.extname(cleaned).toLowerCase();
-  const stem = (files.ALLOWED_EXTENSIONS.has(ext) ? cleaned.slice(0, -ext.length) : cleaned) || '未命名';
-  const candidate = files.ALLOWED_EXTENSIONS.has(ext) ? `${stem}${ext}` : `${stem}.md`;
-  return isReservedWindowsName(candidate) ? '未命名.md' : candidate;
-}
+
+
 async function scanRegistered(folderPath) {
   const scan = await folders.scanFolder(folderPath, fsp, files.ALLOWED_EXTENSIONS, files.MAX_BYTES);
   return { folder: folderPath, ...scan };
@@ -313,22 +292,12 @@ function createWindow() {
   win = new BrowserWindow({ width: 1200, height: 820, minWidth: 760, minHeight: 520, show: false, backgroundColor: '#f6f5f1', title: '墨页', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.once('ready-to-show', () => win.show());
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
-  win.webContents.on('render-process-gone', () => { rendererUnavailable = true; });
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   win.webContents.session.setPermissionCheckHandler(() => false);
   win.webContents.session.on('will-download', (_event, item) => item.cancel());
-  win.on('close', (event) => {
-    if (closing) return;
-    event.preventDefault();
-    if (rendererUnavailable || win.webContents.isDestroyed()) {
-      const fallback = Promise.race([saveRecovery(), new Promise((resolve) => setTimeout(resolve, 2000))]).catch(() => {});
-      fallback.finally(() => { closing = true; if (win && !win.isDestroyed()) win.destroy(); });
-      return;
-    }
-    sendCommand('close');
-  });
+  win.on('close', (event) => { if (!closing) { event.preventDefault(); sendCommand('close'); } });
   win.loadFile(ENTRY);
 }
 app.on('second-instance', (_event, commandLine) => { const candidate = commandLinePath(commandLine); if (candidate) pendingPath = candidate; if (win) { if (win.isMinimized()) win.restore(); win.focus(); sendCommand('openPending'); } });
@@ -405,7 +374,7 @@ app.whenReady().then(async () => {
       if (tempHtml) fs.unlink(tempHtml, () => {});
     }
   });
-  ipcMain.on('desktop:state', (event, next) => { if (!isTrusted(event) || closing) return; try { if (next && next.text === state.text && next.savedText === state.savedText && next.filename === state.filename && next.dirty === state.dirty && !!next.composing === !!state.composing) return; const checked = assertSnapshot(next); state = { ...state, ...checked }; if (state.dirty) scheduleRecovery(); else clearRecovery().catch(() => {}); if (pendingAfterRestore) { pendingAfterRestore = false; setImmediate(() => sendCommand('openPending')); } } catch {} });
+  ipcMain.on('desktop:state', (event, next) => { if (!isTrusted(event) || closing) return; try { if (sameDesktopState(next, state)) return; const checked = assertSnapshot(next); state = { ...state, ...checked }; if (state.dirty) scheduleRecovery(); else clearRecovery().catch(() => {}); if (pendingAfterRestore) { pendingAfterRestore = false; setImmediate(() => sendCommand('openPending')); } } catch {} });
   createWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
