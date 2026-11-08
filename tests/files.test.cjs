@@ -30,12 +30,31 @@ test('CRLF expansion is checked against the final on-disk byte limit', async t =
   assert.deepEqual(await fs.readdir(d), []);
 });
 test('oversized current fingerprint never reads file and is a conflict', async () => {
-  let reads = 0;
-  const io = { stat: async () => ({ isFile: () => true, size: f.MAX_BYTES + 1, mtimeMs: 1 }), readFile: async () => { reads += 1; throw new Error('must not read'); } };
+  let reads = 0, closed = false;
+  const io = { open: async () => ({ stat: async () => ({ isFile: () => true, size: f.MAX_BYTES + 1, mtimeMs: 1 }), read: async () => { reads += 1; throw new Error('must not read'); }, close: async () => { closed = true; } }) };
   const current = await f.currentFingerprint('/tmp/large.md', io);
   assert.equal(current.oversized, true);
   assert.equal(reads, 0);
+  assert.equal(closed, true);
   assert.equal(f.sameFingerprint(current, { size: current.size, mtimeMs: 2, hash: 'x' }), false);
+});
+test('current fingerprint bounds reads when a file grows after stat', async () => {
+  let totalRead = 0, closed = false;
+  const io = { open: async () => ({
+    stat: async () => ({ isFile: () => true, size: 1, mtimeMs: 1 }),
+    read: async (buffer, offset, length, position) => {
+      const bytesRead = Math.min(length, f.MAX_BYTES + 100 - position);
+      buffer.fill(0x61, offset, offset + bytesRead);
+      totalRead += bytesRead;
+      return { bytesRead, buffer };
+    },
+    close: async () => { closed = true; },
+  }) };
+  const current = await f.currentFingerprint('/tmp/growing.md', io);
+  assert.equal(current.oversized, true);
+  assert.equal(current.size, f.MAX_BYTES + 1);
+  assert.equal(totalRead, f.MAX_BYTES + 1);
+  assert.equal(closed, true);
 });
 test('same fingerprint ignores mtime changes when size and hash match', async () => {
   assert.equal(f.sameFingerprint({ size: 3, mtimeMs: 1, hash: 'same' }, { size: 3, mtimeMs: 2, hash: 'same' }), true);
