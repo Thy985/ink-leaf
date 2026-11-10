@@ -2,6 +2,7 @@ import { isAndroid, nativeFile, installMobileUI, compactViewport } from './mobil
 import { parseBlocks, serialize, renderInline, buildDocContext } from './model.js';
 import { shouldOpenExternalLink } from './link-activation.js';
 import { previewMarkdown, needsPreview, renderDocumentHTML } from './vendor/renderer.js';
+import { beginFolderScan } from './folder-panel-state.js';
 
 const $ = (id) => document.getElementById(id);
 const editor = $('editor');
@@ -1554,8 +1555,10 @@ function renderTree() {
   if (scan.truncated) { const li = document.createElement('li'); li.textContent = '扫描条目过多，结果已截断（最多 6 层、2000 项、300 个文档）。'; excludedList.append(li); excludedWrap.hidden = false; }
 }
 async function setActiveFolder(folderPath) {
-  folderState.activeFolder = folderPath;
-  folderState.lastScan = null;
+  if (!beginFolderScan(folderState, folderPath, desktopBusy || composing)) {
+    toast(composing ? '请先完成输入法选词' : '请等待当前文件操作完成');
+    return;
+  }
   renderChips();
   renderTree();
   const result = await runDesktop('folderScan', { folder: folderPath });
