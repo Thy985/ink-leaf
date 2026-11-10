@@ -253,9 +253,15 @@ async function perform(action, rawSnapshot = state, params = null) {
   }
   if (action === 'folderAdd') {
     if (!sessionState) sessionState = await readSession();
-    const picked = await dialog.showOpenDialog(win, { title: '导入文件夹', properties: ['openDirectory'] });
-    if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
-    const folderPath = picked.filePaths[0];
+    const directPath = params?.path;
+    let folderPath;
+    if (directPath) {
+      folderPath = directPath;
+    } else {
+      const picked = await dialog.showOpenDialog(win, { title: '导入文件夹', properties: ['openDirectory'] });
+      if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
+      folderPath = picked.filePaths[0];
+    }
     const scan = await scanRegistered(folderPath);
     if (!sessionState.folders.some((f) => f.path === folderPath)) sessionState = await updateSession({ folders: [...sessionState.folders, { path: folderPath, lastDoc: null, addedAt: new Date().toISOString() }], activeFolder: folderPath });
     else sessionState = await updateSession({ activeFolder: folderPath });
@@ -345,10 +351,19 @@ function menuTemplate() {
 function createWindow() {
   win = new BrowserWindow({ width: 1200, height: 820, minWidth: 760, minHeight: 520, show: false, backgroundColor: '#f6f5f1', title: '墨页', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.once('ready-to-show', () => win.show());
+  // Allow HTTP connections for local AI services
+  win.webContents.session.setCertificateVerifyProc((request, callback) => {
+    callback(0); // Continue
+  });
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
-  win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  // Allow network requests for AI service (main process net.request is not affected by this)
+  win.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    // Allow clipboard-read for paste operations, deny others
+    if (permission === 'clipboard-read') callback(true);
+    else callback(false);
+  });
   win.webContents.session.setPermissionCheckHandler(() => false);
   win.webContents.session.on('will-download', (_event, item) => item.cancel());
   win.on('close', (event) => {

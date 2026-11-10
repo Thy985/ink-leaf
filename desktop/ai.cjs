@@ -3,10 +3,11 @@
 // AI 能力层：Provider Adapter、Context Builder、Action Registry、Document Operation Layer
 // 独立于 web/app.js 和 desktop/main.cjs，避免 AI 逻辑散落在渲染层。
 
-const { net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = fs.promises;
+const http = require('node:http');
+const https = require('node:https');
 const { pathToFileURL } = require('node:url');
 
 // ---------------------------------------------------------------------------
@@ -61,17 +62,18 @@ async function callProvider(messages, options = {}) {
 
   return new Promise((resolve, reject) => {
     const url = new URL(`${config.baseUrl}/chat/completions`);
-    const request = net.request({
+    const isHttps = url.protocol === 'https:';
+    const httpModule = isHttps ? https : http;
+
+    const request = httpModule.request(url.toString(), {
       method: 'POST',
-      url: url.toString(),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`,
         'Content-Length': Buffer.byteLength(body),
       },
-    });
-    let responseData = '';
-    request.on('response', (response) => {
+    }, (response) => {
+      let responseData = '';
       response.on('data', (chunk) => { responseData += chunk.toString('utf8'); });
       response.on('end', () => {
         try {
@@ -96,7 +98,7 @@ async function callProvider(messages, options = {}) {
       });
       response.on('error', () => reject(new Error('AI 服务响应失败')));
     });
-    request.on('error', () => reject(new Error('无法连接 AI 服务，请检查网络')));
+    request.on('error', (error) => reject(new Error(`无法连接 AI 服务: ${error.message || '网络错误'}`)));
     request.write(body);
     request.end();
   });
