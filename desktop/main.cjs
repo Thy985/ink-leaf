@@ -239,7 +239,8 @@ async function perform(action, rawSnapshot = state, params = null) {
   if (action === 'folderRename') {
     if (!sessionState) sessionState = await readSession();
     const folderPath = requireFolder(params?.folder);
-    const target = folderRelTarget(folderPath, params?.path);
+    const target = await folders.resolveSafeInFolder(folderPath, params?.path, fsp);
+    if (!target) throw new Error('文件必须位于已导入文件夹内');
     const updated = path.join(path.dirname(target), validBareName(params?.name));
     if (updated === target) return scanRegistered(folderPath);
     let exists = null;

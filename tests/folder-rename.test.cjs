@@ -17,7 +17,8 @@ test('renaming the open folder document returns its new path and keeps subsequen
   const folder = await temp(t);
   const userData = await temp(t);
   const originalPath = path.join(folder, 'old.md');
-  const renamedPath = path.join(folder, 'new.md');
+  const realFolder = await fs.realpath(folder);
+  const renamedPath = path.join(realFolder, 'new.md');
   const originalText = '# before\n';
   await fs.writeFile(originalPath, originalText);
 
