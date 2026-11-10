@@ -1408,7 +1408,11 @@ async function runDesktop(action, params) {
   }
 }
 function nativeCommand(action) {
-  if (desktopBusy || composing) { if (composing) toast('请先完成输入法选词'); return; }
+  if (desktopBusy || composing) {
+    if (composing) toast('请先完成输入法选词');
+    else if (action === 'close') toast('正在处理文件操作，完成后可关闭窗口');
+    return;
+  }
   if (['open', 'new', 'save', 'saveAs', 'close', 'openPending'].includes(action)) return runDesktop(action);
   if (action === 'folderAdd') { switchPanel('folders'); $('folder-add').click(); return; }
   const field = document.activeElement;

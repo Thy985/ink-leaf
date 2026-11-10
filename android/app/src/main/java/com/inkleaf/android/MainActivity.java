@@ -184,7 +184,8 @@ public final class MainActivity extends Activity {
                 try (OutputStream stream = getContentResolver().openOutputStream(uri, "w")) { if (stream == null) throw new Exception("无法写入"); stream.write(out); stream.flush(); }
                 JSONObject o = new JSONObject(); o.put("filename", displayName(uri)); reply(id, o);
             }
-        } catch (Exception e) { reply(id, error(e.getMessage() == null ? "文件操作失败" : e.getMessage())); } });
+        } catch (Exception e) { reply(id, error(e.getMessage() == null ? "文件操作失败" : e.getMessage())); }
+        finally { if (request == EXPORT) { synchronized (exports) { exports.remove(id); } } } });
     }
     private final java.util.Map<String,String> exports = new java.util.HashMap<>();
     private String exportTextById(String id) { synchronized (exports) { String s = exports.remove(id); return s == null ? "" : s; } }

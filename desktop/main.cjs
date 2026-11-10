@@ -23,6 +23,7 @@ let draftTimer;
 let draftVersion = 0;
 let recoveryQueue = Promise.resolve();
 let closing = false;
+let closeFallbackTimer = null;
 let recoveryWritable = false;
 let state = { text: '', filename: '未命名.md', dirty: false, savedText: '', composing: false, filepath: null };
 let opened = null; // { filepath, fingerprint, eol, bom }
@@ -216,7 +217,9 @@ async function perform(action, rawSnapshot = state, params = null) {
   if (action === 'close') {
     const decision = await chooseDirty(snapshot, 'close'); if (decision === 'cancel') return { canceled: true };
     if (decision === 'discard' || decision === 'save') await clearRecovery();
-    clearTimeout(draftTimer); draftTimer = null; ++draftVersion; state = { ...state, dirty: false }; closing = true; if (win && !win.isDestroyed()) win.destroy();
+    clearTimeout(draftTimer); draftTimer = null; ++draftVersion; state = { ...state, dirty: false }; closing = true;
+    if (closeFallbackTimer) { clearTimeout(closeFallbackTimer); closeFallbackTimer = null; }
+    if (win && !win.isDestroyed()) win.destroy();
     return { closed: true };
   }
   if (action === 'folderAdd') {
@@ -313,7 +316,24 @@ function createWindow() {
   win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   win.webContents.session.setPermissionCheckHandler(() => false);
   win.webContents.session.on('will-download', (_event, item) => item.cancel());
-  win.on('close', (event) => { if (!closing) { event.preventDefault(); sendCommand('close'); } });
+  win.on('close', (event) => {
+    if (closing) return;
+    event.preventDefault();
+    sendCommand('close');
+    // Fallback: if the renderer never responds (crashed, hung, or busy too long),
+    // force-close after a timeout so the user is never trapped.
+    if (closeFallbackTimer) clearTimeout(closeFallbackTimer);
+    closeFallbackTimer = setTimeout(() => {
+      if (!closing && win && !win.isDestroyed()) {
+        closing = true;
+        win.destroy();
+      }
+    }, 10000);
+  });
+  win.webContents.on('render-process-gone', () => {
+    if (!closing) { closing = true; }
+    if (win && !win.isDestroyed()) win.destroy();
+  });
   win.loadFile(ENTRY);
 }
 app.on('second-instance', (_event, commandLine) => { const candidate = commandLinePath(commandLine); if (candidate) pendingPath = candidate; if (win) { if (win.isMinimized()) win.restore(); win.focus(); sendCommand('openPending'); } });
