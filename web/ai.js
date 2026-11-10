@@ -49,6 +49,7 @@ function createAIPanel() {
     <div class="ai-panel-tabs">
       <button type="button" class="ai-tab active" data-tab="chat">问答</button>
       <button type="button" class="ai-tab" data-tab="review">修改审阅</button>
+      <button type="button" class="ai-tab" data-tab="analysis">分析</button>
     </div>
     <div class="ai-panel-body">
       <div class="ai-tab-page active" data-page="chat">
@@ -67,16 +68,28 @@ function createAIPanel() {
         </div>
         <div class="ai-context-notice">AI 将提出修改建议，不会直接修改文档</div>
       </div>
+      <div class="ai-tab-page" data-page="analysis">
+        <div class="ai-analysis-controls">
+          <button type="button" id="ai-analyze-btn" class="ai-analysis-btn">分析文档结构</button>
+          <button type="button" id="ai-summarize-btn" class="ai-analysis-btn">生成摘要</button>
+        </div>
+        <div class="ai-analysis-content" id="ai-analysis-content">
+          <div class="ai-analysis-placeholder">点击上方按钮分析当前文档</div>
+        </div>
+      </div>
     </div>`;
   document.querySelector('.app').appendChild(panel);
 
   panel.querySelector('.ai-panel-close').onclick = () => toggleAIPanel(false);
   panel.querySelector('[data-tab="chat"]').onclick = () => switchAITab('chat');
   panel.querySelector('[data-tab="review"]').onclick = () => switchAITab('review');
+  panel.querySelector('[data-tab="analysis"]').onclick = () => switchAITab('analysis');
   panel.querySelector('#ai-send').onclick = () => sendAIQuestion();
   panel.querySelector('#ai-question').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAIQuestion(); });
   panel.querySelector('#ai-review-send').onclick = () => sendAIReview();
   panel.querySelector('#ai-instruction').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAIReview(); });
+  panel.querySelector('#ai-analyze-btn').onclick = () => analyzeDocument();
+  panel.querySelector('#ai-summarize-btn').onclick = () => summarizeDocument();
 }
 
 function createSelectionToolbar() {
@@ -302,6 +315,66 @@ async function sendAIReview() {
   } finally {
     aiBusy = false;
   }
+}
+
+async function analyzeDocument() {
+  const content = document.getElementById('ai-analysis-content');
+  if (!content || aiBusy) return;
+  aiBusy = true;
+  content.innerHTML = '<div class="ai-analysis-loading">正在分析文档结构…</div>';
+  try {
+    const document = { text: getText(), filename: getFilename() };
+    const result = await window.desktop.ai.analyze(document);
+    if (!result.ok) throw new Error(result.message || '文档分析失败');
+    renderAnalysis(content, result.analysis);
+  } catch (error) {
+    content.innerHTML = `<div class="ai-analysis-error">${escapeHtml(friendlyError(error, '文档分析失败'))}</div>`;
+  } finally {
+    aiBusy = false;
+  }
+}
+
+async function summarizeDocument() {
+  const content = document.getElementById('ai-analysis-content');
+  if (!content || aiBusy) return;
+  if (!aiProviderConfigured) {
+    toast('请先配置 AI 服务');
+    return;
+  }
+  aiBusy = true;
+  content.innerHTML = '<div class="ai-analysis-loading">正在生成摘要…</div>';
+  try {
+    const document = { text: getText(), filename: getFilename() };
+    const result = await window.desktop.ai.summarize(document);
+    if (!result.ok) throw new Error(result.message || '文档摘要失败');
+    renderSummary(content, result.summary);
+  } catch (error) {
+    content.innerHTML = `<div class="ai-analysis-error">${escapeHtml(friendlyError(error, '文档摘要失败'))}</div>`;
+  } finally {
+    aiBusy = false;
+  }
+}
+
+function renderAnalysis(container, analysis) {
+  const { outline, stats } = analysis;
+  const outlineHtml = outline.length > 0
+    ? `<div class="ai-analysis-section"><h3>文档大纲</h3><ul class="ai-outline">${outline.map((h) =>
+        `<li class="ai-outline-item ai-outline-level-${h.level}"><span class="ai-outline-marker">${'#'.repeat(h.level)}</span>${escapeHtml(h.title)}</li>`
+      ).join('')}</ul></div>`
+    : '<div class="ai-analysis-section"><p class="ai-analysis-empty">未检测到标题结构</p></div>';
+  const statsHtml = `<div class="ai-analysis-section"><h3>统计信息</h3><div class="ai-stats-grid">
+    <div class="ai-stat"><span class="ai-stat-value">${stats.wordCount}</span><span class="ai-stat-label">字数</span></div>
+    <div class="ai-stat"><span class="ai-stat-value">${stats.charCount}</span><span class="ai-stat-label">字符</span></div>
+    <div class="ai-stat"><span class="ai-stat-value">${stats.paragraphCount}</span><span class="ai-stat-label">段落</span></div>
+    <div class="ai-stat"><span class="ai-stat-value">${stats.codeBlockCount}</span><span class="ai-stat-label">代码块</span></div>
+    <div class="ai-stat"><span class="ai-stat-value">${stats.lineCount}</span><span class="ai-stat-label">行数</span></div>
+    <div class="ai-stat"><span class="ai-stat-value">${stats.headingCount}</span><span class="ai-stat-label">标题</span></div>
+  </div></div>`;
+  container.innerHTML = outlineHtml + statsHtml;
+}
+
+function renderSummary(container, summary) {
+  container.innerHTML = `<div class="ai-analysis-section"><h3>文档摘要</h3><div class="ai-summary">${escapeHtml(summary)}</div></div>`;
 }
 
 function addAIMessage(container, role, text) {

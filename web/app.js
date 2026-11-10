@@ -4,6 +4,7 @@ import { shouldOpenExternalLink } from './link-activation.js';
 import { previewMarkdown, needsPreview, renderDocumentHTML } from './vendor/renderer.js';
 import { beginFolderScan } from './folder-panel-state.js';
 import { initAI, isAIAvailable, toggleAIPanel, handleAICommand, setupSelectionToolbar, openAISettings } from './ai.js';
+import { initSearch, isSearchAvailable, toggleSearchPanel } from './search.js';
 
 const $ = (id) => document.getElementById(id);
 const editor = $('editor');
@@ -1408,15 +1409,17 @@ async function runDesktop(action, params) {
     if (freeze) { editor.contentEditable = 'true'; source.readOnly = false; }
   }
 }
-function nativeCommand(action) {
+function nativeCommand(action, payload) {
   if (desktopBusy || composing) {
     if (composing) toast('请先完成输入法选词');
     else if (action === 'close') toast('正在处理文件操作，完成后可关闭窗口');
     return;
   }
+  if (action === 'openRecent' && payload) { runDesktop('open', payload); return; }
   if (['open', 'new', 'save', 'saveAs', 'close', 'openPending'].includes(action)) return runDesktop(action);
   if (action === 'folderAdd') { switchPanel('folders'); $('folder-add').click(); return; }
   if (['aiPanel', 'aiSettings', 'aiRewrite', 'aiCondense', 'aiExpand', 'aiExplain', 'aiLogic'].includes(action)) { handleAICommand(action); return; }
+  if (action === 'search') { toggleSearchPanel(); return; }
   const field = document.activeElement;
   const inField = field instanceof HTMLInputElement || field?.closest('dialog');
   if (inField && ['undo', 'redo', 'bold', 'italic', 'link'].includes(action)) {
@@ -1452,13 +1455,19 @@ if (desktop) {
     initAI();
     setupSelectionToolbar();
   }
+  // Initialize search panel (desktop only).
+  if (isSearchAvailable()) {
+    initSearch();
+  }
 }
 
-// Expose helpers for the AI module (renderer-side globals).
+// Expose helpers for the AI and search modules (renderer-side globals).
 window.inkstoneGetText = text;
 window.inkstoneGetFilename = () => filename;
 window.inkstoneUpdateUI = () => { updateUI(); };
 window.inkstoneToast = toast;
+window.inkstoneSnapshot = desktopSnapshot;
+window.inkstoneInstallNativeDocument = installNativeDocument;
 
 // --- Folder panel: read-only import of a local folder (desktop only). ---
 // Every filesystem operation goes through desktop.perform's allowlist; the renderer

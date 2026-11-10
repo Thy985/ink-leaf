@@ -74,8 +74,9 @@ function resultFor(text, filename, filepath, savedText, dirty) { return { text, 
 // next launch restores the previous view. It never stores document text — that stays in
 // recovery.json — and both files live in the same user-data directory.
 function sessionPath() { return path.join(userDataDir(), 'session.json'); }
+const MAX_RECENT_DOCS = 10;
 function sanitizeSession(data) {
-  const empty = { version: 1, folders: [], activeFolder: null, lastDoc: null };
+  const empty = { version: 1, folders: [], activeFolder: null, lastDoc: null, recentDocs: [] };
   if (!data || typeof data !== 'object') return empty;
   const seen = new Set();
   const folderList = [];
@@ -89,11 +90,26 @@ function sanitizeSession(data) {
       addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : new Date().toISOString(),
     });
   }
+  const recentDocs = [];
+  const recentSeen = new Set();
+  for (const entry of Array.isArray(data.recentDocs) ? data.recentDocs : []) {
+    const p = entry && typeof entry.path === 'string' ? entry.path : null;
+    if (!p || !path.isAbsolute(p) || recentSeen.has(p)) continue;
+    recentSeen.add(p);
+    recentDocs.push({
+      path: p,
+      openedAt: typeof entry.openedAt === 'string' ? entry.openedAt : new Date().toISOString(),
+    });
+    if (recentDocs.length >= MAX_RECENT_DOCS) break;
+  }
+  // Sort by openedAt descending (newest first)
+  recentDocs.sort((a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime());
   return {
     version: 1,
     folders: folderList,
     activeFolder: typeof data.activeFolder === 'string' && seen.has(data.activeFolder) ? data.activeFolder : folderList[0]?.path || null,
     lastDoc: typeof data.lastDoc === 'string' && files.ALLOWED_EXTENSIONS.has(path.extname(data.lastDoc).toLowerCase()) ? data.lastDoc : null,
+    recentDocs,
   };
 }
 async function readSession() {
@@ -122,12 +138,17 @@ function withinFolder(folderPath, filePath) {
   return !!rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 function publicFolders() { return sessionState.folders.map(({ path: p, lastDoc }) => ({ path: p, lastDoc })); }
+function publicRecentDocs() { return sessionState.recentDocs.map(({ path: p, openedAt }) => ({ path: p, openedAt })); }
 async function recordSessionDoc(filePath) {
   if (!sessionState) sessionState = await readSession();
   const patch = { lastDoc: filePath };
   const folder = sessionState.folders.find((f) => withinFolder(f.path, filePath));
   if (folder) { patch.activeFolder = folder.path; if (folder.lastDoc !== filePath) patch.folders = sessionState.folders.map((f) => f.path === folder.path ? { ...f, lastDoc: filePath } : f); }
-  if (patch.lastDoc === sessionState.lastDoc && patch.activeFolder === sessionState.activeFolder && !patch.folders) return;
+  // Update recent docs: move to front, dedupe, cap at 10
+  const now = new Date().toISOString();
+  const recentDocs = [{ path: filePath, openedAt: now }, ...sessionState.recentDocs.filter((d) => d.path !== filePath)].slice(0, MAX_RECENT_DOCS);
+  patch.recentDocs = recentDocs;
+  if (patch.lastDoc === sessionState.lastDoc && patch.activeFolder === sessionState.activeFolder && !patch.folders && JSON.stringify(recentDocs) === JSON.stringify(sessionState.recentDocs)) return;
   sessionState = await updateSession(patch);
 }
 async function chooseDirty(snapshot, operation) {
@@ -145,7 +166,8 @@ async function openPath(filePath) {
   const doc = await files.readDocument(filePath);
   opened = { filepath: filePath, fingerprint: doc.fingerprint, eol: doc.eol, bom: doc.bom };
   await recordSessionDoc(filePath).catch(() => {});
-  return resultFor(doc.text, doc.filename, filePath, doc.text, false);
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate()));
+  return { ...resultFor(doc.text, doc.filename, filePath, doc.text, false), session: { folders: publicFolders(), activeFolder: sessionState.activeFolder, lastDoc: sessionState.lastDoc, recentDocs: publicRecentDocs() } };
 }
 // Shared by Ctrl+O and folder-panel opens: read first so a bad file never discards the
 // draft, then ask about unsaved changes, then commit.
@@ -156,7 +178,8 @@ async function openCandidate(filePath, snapshot, readOptions = {}) {
   opened = { filepath: candidate.filepath, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom };
   await clearRecovery();
   await recordSessionDoc(candidate.filepath).catch(() => {});
-  return adopt(resultFor(candidate.text, candidate.filename, candidate.filepath, candidate.text, false));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate()));
+  return adopt({ ...resultFor(candidate.text, candidate.filename, candidate.filepath, candidate.text, false), session: { folders: publicFolders(), activeFolder: sessionState.activeFolder, lastDoc: sessionState.lastDoc, recentDocs: publicRecentDocs() } });
 }
 function adopt(r) { if (r && !r.canceled) state = { ...state, text: r.text, filename: r.filename, savedText: r.savedText ?? r.text, dirty: !!r.dirty, filepath: r.filepath || null }; return r; }
 async function savePath(snapshot, filePath, saveAs = false) {
@@ -190,7 +213,7 @@ async function perform(action, rawSnapshot = state, params = null) {
   if (snapshot.composing && action !== 'restore') throw new Error('正在输入，暂不能执行文件操作');
   if (action === 'restore') {
     if (!sessionState) sessionState = await readSession();
-    const sessionInfo = () => ({ folders: publicFolders(), activeFolder: sessionState.activeFolder, lastDoc: sessionState.lastDoc });
+    const sessionInfo = () => ({ folders: publicFolders(), activeFolder: sessionState.activeFolder, lastDoc: sessionState.lastDoc, recentDocs: publicRecentDocs() });
     const recovery = await readRecovery();
     if (recovery) { pendingAfterRestore = !!pendingPath; opened = recovery.filepath ? { filepath: recovery.filepath, fingerprint: recovery.fingerprint, eol: recovery.eol, bom: recovery.bom } : null; return adopt({ ...resultFor(recovery.text, recovery.filename, recovery.filepath, recovery.savedText, true), session: sessionInfo() }); }
     if (pendingPath) { const candidate = pendingPath; pendingPath = null; return adopt({ ...(await openPath(candidate)), session: sessionInfo() }); }
@@ -202,6 +225,11 @@ async function perform(action, rawSnapshot = state, params = null) {
   }
   if (action === 'openPending') { if (!pendingPath) return { canceled: true }; const p = pendingPath; const candidate = await files.readDocument(p); const decision = await chooseDirty(snapshot, 'open'); if (decision === 'cancel') { pendingPath = p; return { canceled: true }; } pendingPath = null; await clearRecovery(); opened = { filepath: p, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom }; await recordSessionDoc(p).catch(() => {}); return adopt(resultFor(candidate.text, candidate.filename, p, candidate.text, false)); }
   if (action === 'open') {
+    const directPath = params?.path;
+    if (directPath) {
+      files.assertSupportedPath(directPath);
+      return openCandidate(directPath, snapshot);
+    }
     const picked = await dialog.showOpenDialog(win, { title: '打开 Markdown', properties: ['openFile'], filters: [{ name: 'Markdown/文本', extensions: ['md', 'markdown', 'txt'] }] });
     if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
     return openCandidate(picked.filePaths[0], snapshot);
@@ -298,11 +326,16 @@ async function scanRegistered(folderPath) {
   const scan = await folders.scanFolder(folderPath, fsp, files.ALLOWED_EXTENSIONS, files.MAX_BYTES);
   return { folder: folderPath, ...scan };
 }
-function sendCommand(action) { if (win && !win.isDestroyed() && win.webContents) win.webContents.send('desktop:command', action); }
+function sendCommand(action, payload) { if (win && !win.isDestroyed() && win.webContents) win.webContents.send('desktop:command', { action, payload }); }
 function menuTemplate() {
   const item = (label, action, accelerator) => ({ label, ...(accelerator ? { accelerator } : {}), click: () => action === 'fullscreen' ? win.setFullScreen(!win.isFullScreen()) : sendCommand(action) });
+  const recentSubmenu = (sessionState?.recentDocs || []).map((doc) => ({
+    label: doc.path,
+    click: () => sendCommand('openRecent', doc.path),
+  }));
+  const recentItem = { label: '打开最近', submenu: recentSubmenu.length > 0 ? recentSubmenu : [{ label: '（暂无最近文档）', enabled: false }] };
   return [
-    { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('打开文件夹…', 'folderAdd'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
+    { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), recentItem, item('打开文件夹…', 'folderAdd'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('搜索文件夹…', 'search', 'CommandOrControl+Shift+F'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
     { label: '编辑', submenu: [item('撤销', 'undo', 'CommandOrControl+Z'), item('重做', 'redo', 'CommandOrControl+Y'), item('重做（备用）', 'redo', 'CommandOrControl+Shift+Z'), { type: 'separator' }, {role:'cut',label:'剪切'}, {role:'copy',label:'复制'}, {role:'paste',label:'粘贴'}, {role:'selectAll',label:'全选'}, { type: 'separator' }, item('粗体', 'bold', 'CommandOrControl+B'), item('斜体', 'italic', 'CommandOrControl+I'), item('链接', 'link', 'CommandOrControl+K'), item('查找', 'find', 'CommandOrControl+F'), item('替换', 'replace', 'CommandOrControl+H')] },
     { label: '视图', submenu: [item('源文', 'source', 'CommandOrControl+/'), item('专注', 'focus', 'F8'), item('主题', 'theme'), item('大纲', 'outline'), item('全屏', 'fullscreen', 'F11')] },
     { label: 'AI', submenu: [item('AI 助手面板', 'aiPanel', 'CommandOrControl+Space'), { type: 'separator' }, item('改写选中', 'aiRewrite'), item('精简选中', 'aiCondense'), item('扩写选中', 'aiExpand'), item('解释选中', 'aiExplain'), item('检查逻辑', 'aiLogic'), { type: 'separator' }, item('AI 服务设置…', 'aiSettings')] },
@@ -452,6 +485,43 @@ app.whenReady().then(async () => {
     catch (error) { return { ok: false, message: error.message || '配置保存失败' }; }
   });
   ipcMain.handle('ai:provider:clear', async (event) => { if (!isTrusted(event)) return { ok: false }; try { return { ok: true, status: await ai.clearProviderConfig() }; } catch (error) { return { ok: false, message: error.message || '配置清除失败' }; } });
+  // 全文搜索：跨已导入文件夹的纯内存扫描
+  ipcMain.handle('desktop:search', async (event, query, options) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的搜索请求' };
+    try {
+      if (typeof query !== 'string' || !query.trim()) throw new Error('请输入搜索关键词');
+      if (!sessionState) sessionState = await readSession();
+      const results = [];
+      for (const folder of sessionState.folders) {
+        const search = await folders.searchFolder(folder.path, query, options || {});
+        if (search.results.length > 0) results.push({ folder: folder.path, ...search });
+      }
+      return { ok: true, results, totalMatches: results.reduce((sum, r) => sum + r.totalMatches, 0) };
+    } catch (error) {
+      return { ok: false, message: error.message || '搜索失败' };
+    }
+  });
+  // 文档分析：结构大纲与统计（纯本地，不调用远程模型）
+  ipcMain.handle('ai:analyze', async (event, document) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
+    try {
+      if (!document || typeof document.text !== 'string') throw new Error('无效的文档数据');
+      return { ok: true, analysis: ai.analyzeDocument(document) };
+    } catch (error) {
+      return { ok: false, message: error.message || '文档分析失败' };
+    }
+  });
+  // 文档摘要：调用远程模型生成
+  ipcMain.handle('ai:summarize', async (event, document) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
+    try {
+      if (!document || typeof document.text !== 'string') throw new Error('无效的文档数据');
+      const summary = await ai.summarizeDocument(document);
+      return { ok: true, summary };
+    } catch (error) {
+      return { ok: false, message: error.message || '文档摘要失败' };
+    }
+  });
   createWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

@@ -224,3 +224,46 @@ test('AI: provider config does not leak apiKey in getProviderStatus', async () =
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('AI: analyzeDocument extracts outline and stats from a document', () => {
+  const document = {
+    text: '# 一级标题\n\n这是第一段内容。\n\n## 二级标题\n\n- 列表项 1\n- 列表项 2\n\n### 三级标题\n\n```js\nconsole.log("hello");\n```\n\n#### 四级标题\n\n结束。',
+    filename: 'test.md',
+  };
+  const analysis = ai.analyzeDocument(document);
+  assert.ok(Array.isArray(analysis.outline));
+  assert.strictEqual(analysis.outline.length, 4);
+  assert.strictEqual(analysis.outline[0].level, 1);
+  assert.strictEqual(analysis.outline[0].title, '一级标题');
+  assert.strictEqual(analysis.outline[1].level, 2);
+  assert.strictEqual(analysis.outline[1].title, '二级标题');
+  assert.strictEqual(analysis.outline[2].level, 3);
+  assert.strictEqual(analysis.outline[3].level, 4);
+  assert.strictEqual(analysis.stats.headingCount, 4);
+  assert.ok(analysis.stats.wordCount > 0);
+  assert.ok(analysis.stats.charCount > 0);
+  assert.ok(analysis.stats.lineCount > 0);
+  assert.ok(analysis.stats.paragraphCount > 0);
+  assert.ok(analysis.stats.codeBlockCount >= 1);
+});
+
+test('AI: analyzeDocument handles empty document', () => {
+  const analysis = ai.analyzeDocument({ text: '', filename: 'empty.md' });
+  assert.deepStrictEqual(analysis.outline, []);
+  assert.strictEqual(analysis.stats.headingCount, 0);
+  assert.strictEqual(analysis.stats.wordCount, 0);
+  assert.strictEqual(analysis.stats.charCount, 0);
+  assert.strictEqual(analysis.stats.paragraphCount, 0);
+  assert.strictEqual(analysis.stats.codeBlockCount, 0);
+});
+
+test('AI: analyzeDocument handles document without headings', () => {
+  const analysis = ai.analyzeDocument({ text: '纯文本内容。\n\n没有标题。', filename: 'plain.md' });
+  assert.deepStrictEqual(analysis.outline, []);
+  assert.strictEqual(analysis.stats.headingCount, 0);
+  assert.ok(analysis.stats.paragraphCount >= 1);
+});
+
+test('AI: summarizeDocument throws for empty document', async () => {
+  await assert.rejects(() => ai.summarizeDocument({ text: '', filename: 'empty.md' }), /没有可分析的文档/);
+});

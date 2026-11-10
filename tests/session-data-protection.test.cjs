@@ -87,6 +87,6 @@ test('missing session and recovery files still mean a first-run empty state', as
   const userData = await temp(t);
   await withMain(userData, async ({ perform }) => {
     const result = await perform('restore', snapshot);
-    assert.deepEqual(result.session, { folders: [], activeFolder: null, lastDoc: null });
+    assert.deepEqual(result.session, { folders: [], activeFolder: null, lastDoc: null, recentDocs: [] });
   });
 });

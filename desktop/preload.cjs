@@ -1,7 +1,7 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 
-const ACTIONS = new Set(['restore', 'open', 'new', 'save', 'saveAs', 'close', 'openPending', 'folderAdd', 'folderScan', 'folderOpen', 'folderRename', 'folderCreate', 'folderRemove']);
+const ACTIONS = new Set(['restore', 'open', 'new', 'save', 'saveAs', 'close', 'openPending', 'folderAdd', 'folderScan', 'folderOpen', 'folderRename', 'folderCreate', 'folderRemove', 'search']);
 function validAction(action) { if (typeof action !== 'string' || !ACTIONS.has(action)) throw new Error('未知桌面操作'); return action; }
 function validParams(params) {
   if (params === undefined || params === null) return null;
@@ -47,6 +47,19 @@ function validAiDocument(value) {
   if (Buffer.byteLength(value.text, 'utf8') > 64000) throw new Error('文档内容超过 AI 处理限制');
   return { text: value.text, filename: value.filename.slice(0, 200) };
 }
+function validSearchQuery(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('请输入搜索关键词');
+  if (value.length > 200) throw new Error('搜索关键词过长');
+  return value;
+}
+function validSearchOptions(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的搜索选项');
+  const options = {};
+  if (typeof value.caseSensitive === 'boolean') options.caseSensitive = value.caseSensitive;
+  if (typeof value.regex === 'boolean') options.regex = value.regex;
+  return options;
+}
 function validProviderConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的 AI 配置');
   const config = {};
@@ -59,6 +72,7 @@ function validProviderConfig(value) {
 }
 contextBridge.exposeInMainWorld('desktop', Object.freeze({
   perform(action, snapshot, params) { return ipcRenderer.invoke('desktop:perform', validAction(action), snapshot, validParams(params)); },
+  search(query, options) { return ipcRenderer.invoke('desktop:search', validSearchQuery(query), validSearchOptions(options)); },
   readImage(relativePath) { return ipcRenderer.invoke('desktop:image', validImagePath(relativePath)); },
   exportHtml(html) { return ipcRenderer.invoke('desktop:exportHtml', validExportHtml(html)); },
   writeImage(mime, bytes) { return ipcRenderer.invoke('desktop:writeImage', validImageMime(mime), validImageBytes(bytes)); },
@@ -66,7 +80,11 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   syncState(state) { ipcRenderer.send('desktop:state', state); },
   onCommand(callback) {
     if (typeof callback !== 'function') throw new TypeError('callback 必须是函数');
-    const listener = (_event, action) => callback(action);
+    const listener = (_event, message) => {
+      const action = typeof message === 'string' ? message : message?.action;
+      const payload = typeof message === 'string' ? undefined : message?.payload;
+      callback(action, payload);
+    };
     ipcRenderer.on('desktop:command', listener);
     return () => ipcRenderer.removeListener('desktop:command', listener);
   },
@@ -75,6 +93,8 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
     selection(action, selectionText, document) { return ipcRenderer.invoke('ai:selection', validAiAction(action), validAiText(selectionText, 8000), validAiDocument(document)); },
     document(question, document) { return ipcRenderer.invoke('ai:document', validAiText(question, 4000), validAiDocument(document)); },
     review(instruction, document) { return ipcRenderer.invoke('ai:review', validAiText(instruction, 4000), validAiDocument(document)); },
+    analyze(document) { return ipcRenderer.invoke('ai:analyze', validAiDocument(document)); },
+    summarize(document) { return ipcRenderer.invoke('ai:summarize', validAiDocument(document)); },
     providerStatus() { return ipcRenderer.invoke('ai:provider:status'); },
     saveProvider(config) { return ipcRenderer.invoke('ai:provider:save', validProviderConfig(config)); },
     clearProvider() { return ipcRenderer.invoke('ai:provider:clear'); },

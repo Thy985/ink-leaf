@@ -286,6 +286,70 @@ async function reviewDocument(instruction, document) {
   return await callProvider(messages, { temperature: 0.3 });
 }
 
+// ---------------------------------------------------------------------------
+// Document Analysis (v0.12)
+// ---------------------------------------------------------------------------
+
+const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+const MAX_OUTLINE_DEPTH = 6;
+const MAX_OUTLINE_ITEMS = 200;
+
+function analyzeDocument(document) {
+  const text = document?.text || '';
+  const lines = text.split('\n');
+  const outline = [];
+  let wordCount = 0;
+  let charCount = 0;
+  let paragraphCount = 0;
+  let codeBlockCount = 0;
+  let inCodeBlock = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      if (inCodeBlock) codeBlockCount++;
+      continue;
+    }
+    if (inCodeBlock) continue;
+
+    const heading = line.match(HEADING_RE);
+    if (heading && outline.length < MAX_OUTLINE_ITEMS) {
+      const level = Math.min(heading[1].length, MAX_OUTLINE_DEPTH);
+      outline.push({ level, title: heading[2].trim(), line: i + 1 });
+    }
+
+    if (line.trim() && !line.trim().startsWith('#')) {
+      paragraphCount++;
+      const words = line.trim().split(/\s+/);
+      wordCount += words.length;
+      charCount += line.length;
+    }
+  }
+
+  return {
+    outline,
+    stats: {
+      wordCount,
+      charCount,
+      paragraphCount,
+      codeBlockCount,
+      lineCount: lines.length,
+      headingCount: outline.length,
+    },
+  };
+}
+
+async function summarizeDocument(document) {
+  if (!document?.text) throw new Error('当前没有可分析的文档');
+
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: `请为以下文档生成一段简短的摘要（不超过 100 字），帮助读者快速了解文档内容。直接输出摘要，不要包含任何前缀。\n\n文档内容：\n${truncateText(document.text, CONTEXT_LIMITS.document)}` },
+  ];
+  return await callProvider(messages, { temperature: 0.2 });
+}
+
 function getAvailableActions() {
   return Object.entries(ACTIONS).map(([key, action]) => ({
     key,
@@ -328,6 +392,8 @@ module.exports = {
   askDocument,
   askMultiDocument,
   reviewDocument,
+  analyzeDocument,
+  summarizeDocument,
   getAvailableActions,
   getProviderStatus,
   saveProviderConfig,

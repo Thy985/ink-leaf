@@ -119,4 +119,85 @@ async function scanFolder(root, io, extensions, maxBytes) {
   return { tree, excluded, truncated, entryCount: entries };
 }
 
-module.exports = { MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES, MAX_SCAN_DOCS, SKIP_DIRS, REASONS, toRel, relSegments, resolveInFolder, resolveSafeInFolder, scanFolder };
+// ---------------------------------------------------------------------------
+// Full-text search across imported folders (in-memory, no persistent index).
+// ---------------------------------------------------------------------------
+
+const MAX_SEARCH_FILES = 2000;
+const MAX_SEARCH_MATCHES = 200;
+const MAX_MATCH_CONTEXT = 120;
+
+function escapeRegExp(text) { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function extractMatches(text, query, { caseSensitive = false, regex = false } = {}) {
+  const matches = [];
+  if (!query) return matches;
+  let pattern;
+  try {
+    pattern = regex ? new RegExp(query, caseSensitive ? 'g' : 'gi') : new RegExp(escapeRegExp(query), caseSensitive ? 'g' : 'gi');
+  } catch {
+    return matches;
+  }
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const start = Math.max(0, match.index - MAX_MATCH_CONTEXT);
+    const end = Math.min(text.length, match.index + match[0].length + MAX_MATCH_CONTEXT);
+    matches.push({
+      index: match.index,
+      length: match[0].length,
+      context: text.slice(start, end),
+      lineNumber: text.slice(0, match.index).split('\n').length,
+    });
+    if (matches.length >= MAX_SEARCH_MATCHES) break;
+    if (match[0].length === 0) pattern.lastIndex++;
+  }
+  return matches;
+}
+
+async function searchFolder(root, query, options = {}) {
+  const { caseSensitive = false, regex = false, extensions = null, maxBytes = null } = options;
+  if (!query || !query.trim()) return { query, results: [], totalMatches: 0, truncated: false };
+  const results = [];
+  let totalMatches = 0;
+  let filesSearched = 0;
+  let truncated = false;
+  const extSet = extensions || new Set(['.md', '.markdown', '.txt']);
+  const sizeLimit = maxBytes || 10 * 1024 * 1024;
+
+  async function walk(dirRel) {
+    if (truncated) return;
+    let dirents;
+    try { dirents = await fs.promises.readdir(path.resolve(root, ...dirRel.split('/').filter(Boolean)), { withFileTypes: true }); }
+    catch { return; }
+    for (const dirent of dirents) {
+      if (truncated) return;
+      if (filesSearched >= MAX_SEARCH_FILES) { truncated = true; return; }
+      const childRel = dirRel ? toRel(dirRel, dirent.name) : dirent.name;
+      if (dirent.isSymbolicLink()) continue;
+      if (dirent.isDirectory()) {
+        if (SKIP_DIRS.has(dirent.name)) continue;
+        await walk(childRel);
+        continue;
+      }
+      if (!dirent.isFile()) continue;
+      if (!extSet.has(path.extname(dirent.name).toLowerCase())) continue;
+      const absolute = path.resolve(root, ...childRel.split('/'));
+      try {
+        const stat = await fs.promises.stat(absolute);
+        if (!stat.isFile() || stat.size > sizeLimit) continue;
+        const content = await fs.promises.readFile(absolute, 'utf8');
+        filesSearched++;
+        const matches = extractMatches(content, query, { caseSensitive, regex });
+        if (matches.length > 0) {
+          results.push({ path: childRel, name: dirent.name, matches });
+          totalMatches += matches.length;
+        }
+      } catch { /* skip unreadable files */ }
+    }
+  }
+
+  await walk('');
+  return { query, results, totalMatches, filesSearched, truncated };
+}
+
+module.exports = { MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES, MAX_SCAN_DOCS, MAX_SEARCH_FILES, MAX_SEARCH_MATCHES, SKIP_DIRS, REASONS, toRel, relSegments, resolveInFolder, resolveSafeInFolder, scanFolder, searchFolder, extractMatches };

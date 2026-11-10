@@ -23,7 +23,7 @@ async function withMain(userData, root, run) {
   const electron = {
     app,
     BrowserWindow: class BrowserWindow {},
-    Menu: {},
+    Menu: { buildFromTemplate: (template) => template, setApplicationMenu: () => {} },
     dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [root] }) },
     ipcMain: { handle() {}, on() {} },
     shell: {},

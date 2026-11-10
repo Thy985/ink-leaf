@@ -30,7 +30,7 @@ test('renaming the open folder document returns its new path and keeps subsequen
   const electron = {
     app,
     BrowserWindow: class BrowserWindow {},
-    Menu: {},
+    Menu: { buildFromTemplate: (template) => template, setApplicationMenu: () => {} },
     dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [folder] }) },
     ipcMain: { handle() {}, on() {} },
     shell: {},
