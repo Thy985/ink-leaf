@@ -6,6 +6,7 @@
 // absolute paths and rejects anything escaping the registered folder root.
 
 const path = require('node:path');
+const fs = require('node:fs');
 const { decode } = require('./files.cjs');
 
 const MAX_SCAN_DEPTH = 6;
@@ -36,6 +37,39 @@ function resolveInFolder(root, rel) {
   const contained = path.relative(path.resolve(root), target);
   if (!contained || contained === '..' || contained.startsWith(`..${path.sep}`) || path.isAbsolute(contained)) return null;
   return target;
+}
+
+function isStrictlyInside(root, target) {
+  const relative = path.relative(root, target);
+  return !!relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+// Recheck each path component when opening: the tree may have changed since scanning.
+// Returning the canonical target lets the caller read the resolved file rather than
+// following the renderer-supplied path a second time. This narrows, but cannot entirely
+// remove, parent-directory replacement races with Node's cross-platform path APIs.
+async function resolveSafeInFolder(root, rel, io = fs.promises) {
+  const target = resolveInFolder(root, rel);
+  if (!target) return null;
+  const segments = relSegments(rel);
+  try {
+    const realRoot = await io.realpath(root);
+    let current = path.resolve(root);
+    for (let i = 0; i < segments.length; i++) {
+      current = path.join(current, segments[i]);
+      const stat = await io.lstat(current);
+      if (stat.isSymbolicLink()) throw new Error('文件夹内的软链接或 junction 不跟随');
+      if (i < segments.length - 1 && !stat.isDirectory()) throw new Error('文件路径中的目录已变化');
+      if (i === segments.length - 1 && !stat.isFile()) throw new Error('所选路径不是普通文件');
+    }
+    const realTarget = await io.realpath(target);
+    if (!isStrictlyInside(realRoot, realTarget)) throw new Error('文件必须位于已导入文件夹内');
+    return realTarget;
+  } catch (error) {
+    if (error.message.includes('软链接') || error.message.includes('已变化') || error.message.includes('普通文件') || error.message.includes('必须位于')) throw error;
+    if (error.code === 'ENOENT') throw new Error('文件已不存在或路径已变化');
+    throw error;
+  }
 }
 
 // Reads every candidate document once so encoding problems surface at import time
@@ -85,4 +119,4 @@ async function scanFolder(root, io, extensions, maxBytes) {
   return { tree, excluded, truncated, entryCount: entries };
 }
 
-module.exports = { MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES, MAX_SCAN_DOCS, SKIP_DIRS, REASONS, toRel, relSegments, resolveInFolder, scanFolder };
+module.exports = { MAX_SCAN_DEPTH, MAX_SCAN_ENTRIES, MAX_SCAN_DOCS, SKIP_DIRS, REASONS, toRel, relSegments, resolveInFolder, resolveSafeInFolder, scanFolder };

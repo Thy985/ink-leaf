@@ -137,8 +137,8 @@ async function openPath(filePath) {
 }
 // Shared by Ctrl+O and folder-panel opens: read first so a bad file never discards the
 // draft, then ask about unsaved changes, then commit.
-async function openCandidate(filePath, snapshot) {
-  const candidate = await files.readDocument(filePath);
+async function openCandidate(filePath, snapshot, readOptions = {}) {
+  const candidate = await files.readDocument(filePath, fsp, readOptions);
   const decision = await chooseDirty(snapshot, 'open');
   if (decision === 'cancel') return { canceled: true };
   opened = { filepath: candidate.filepath, fingerprint: candidate.fingerprint, eol: candidate.eol, bom: candidate.bom };
@@ -220,7 +220,12 @@ async function perform(action, rawSnapshot = state, params = null) {
     return { folders: publicFolders(), activeFolder: sessionState.activeFolder, ...scan };
   }
   if (action === 'folderScan') return scanRegistered(requireFolder(params?.folder));
-  if (action === 'folderOpen') return openCandidate(folderRelTarget(requireFolder(params?.folder), params?.path), snapshot);
+  if (action === 'folderOpen') {
+    const folderPath = requireFolder(params?.folder);
+    const safeTarget = await folders.resolveSafeInFolder(folderPath, params?.path, fsp);
+    if (!safeTarget) throw new Error('文件必须位于已导入文件夹内');
+    return openCandidate(safeTarget, snapshot, { noFollow: true });
+  }
   if (action === 'folderRename') {
     if (!sessionState) sessionState = await readSession();
     const folderPath = requireFolder(params?.folder);
