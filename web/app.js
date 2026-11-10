@@ -3,6 +3,7 @@ import { parseBlocks, serialize, renderInline, buildDocContext } from './model.j
 import { shouldOpenExternalLink } from './link-activation.js';
 import { previewMarkdown, needsPreview, renderDocumentHTML } from './vendor/renderer.js';
 import { beginFolderScan } from './folder-panel-state.js';
+import { initAI, isAIAvailable, toggleAIPanel, handleAICommand, setupSelectionToolbar, openAISettings } from './ai.js';
 
 const $ = (id) => document.getElementById(id);
 const editor = $('editor');
@@ -1415,6 +1416,7 @@ function nativeCommand(action) {
   }
   if (['open', 'new', 'save', 'saveAs', 'close', 'openPending'].includes(action)) return runDesktop(action);
   if (action === 'folderAdd') { switchPanel('folders'); $('folder-add').click(); return; }
+  if (['aiPanel', 'aiSettings', 'aiRewrite', 'aiCondense', 'aiExpand', 'aiExplain', 'aiLogic'].includes(action)) { handleAICommand(action); return; }
   const field = document.activeElement;
   const inField = field instanceof HTMLInputElement || field?.closest('dialog');
   if (inField && ['undo', 'redo', 'bold', 'italic', 'link'].includes(action)) {
@@ -1445,7 +1447,18 @@ if (desktop) {
   await runDesktop('restore');
   desktopReady = true;
   updateUI(); persist();
+  // Initialize AI after restore so the panel knows the provider status.
+  if (isAIAvailable()) {
+    initAI();
+    setupSelectionToolbar();
+  }
 }
+
+// Expose helpers for the AI module (renderer-side globals).
+window.inkstoneGetText = text;
+window.inkstoneGetFilename = () => filename;
+window.inkstoneUpdateUI = () => { updateUI(); };
+window.inkstoneToast = toast;
 
 // --- Folder panel: read-only import of a local folder (desktop only). ---
 // Every filesystem operation goes through desktop.perform's allowlist; the renderer

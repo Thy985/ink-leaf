@@ -12,6 +12,7 @@ const updates = require('./update.cjs');
 const { validBareName, safeDocumentName } = require('./names.cjs');
 const { sameDesktopState } = require('./state.cjs');
 const { readJsonFile } = require('./json-store.cjs');
+const ai = require('./ai.cjs');
 
 const MAX_TEXT = files.MAX_BYTES;
 const ENTRY = path.resolve(__dirname, '../web/index.html');
@@ -304,6 +305,7 @@ function menuTemplate() {
     { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), item('打开文件夹…', 'folderAdd'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
     { label: '编辑', submenu: [item('撤销', 'undo', 'CommandOrControl+Z'), item('重做', 'redo', 'CommandOrControl+Y'), item('重做（备用）', 'redo', 'CommandOrControl+Shift+Z'), { type: 'separator' }, {role:'cut',label:'剪切'}, {role:'copy',label:'复制'}, {role:'paste',label:'粘贴'}, {role:'selectAll',label:'全选'}, { type: 'separator' }, item('粗体', 'bold', 'CommandOrControl+B'), item('斜体', 'italic', 'CommandOrControl+I'), item('链接', 'link', 'CommandOrControl+K'), item('查找', 'find', 'CommandOrControl+F'), item('替换', 'replace', 'CommandOrControl+H')] },
     { label: '视图', submenu: [item('源文', 'source', 'CommandOrControl+/'), item('专注', 'focus', 'F8'), item('主题', 'theme'), item('大纲', 'outline'), item('全屏', 'fullscreen', 'F11')] },
+    { label: 'AI', submenu: [item('AI 助手面板', 'aiPanel', 'CommandOrControl+Space'), { type: 'separator' }, item('改写选中', 'aiRewrite'), item('精简选中', 'aiCondense'), item('扩写选中', 'aiExpand'), item('解释选中', 'aiExplain'), item('检查逻辑', 'aiLogic'), { type: 'separator' }, item('AI 服务设置…', 'aiSettings')] },
     { label: '帮助', submenu: [item('使用说明', 'help'), { type: 'separator' }, { label: '检查更新', id: 'check-updates', click: () => { updates.checkUpdates({ net, app, dialog, shell, win }).catch(() => {}); } }] }
   ];
 }
@@ -411,6 +413,45 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.on('desktop:state', (event, next) => { if (!isTrusted(event) || closing) return; try { if (sameDesktopState(next, state)) return; const checked = assertSnapshot(next); state = { ...state, ...checked }; if (state.dirty) scheduleRecovery(); else clearRecovery().catch(() => {}); if (pendingAfterRestore) { pendingAfterRestore = false; setImmediate(() => sendCommand('openPending')); } } catch {} });
+  // AI 能力层：选区操作、文档问答、修改审阅、Provider 配置
+  ipcMain.handle('ai:actions', async (event) => { if (!isTrusted(event)) throw new Error('不受信任的 AI 请求'); return ai.getAvailableActions(); });
+  ipcMain.handle('ai:selection', async (event, action, selection, document) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
+    try {
+      if (typeof action !== 'string' || typeof selection !== 'string') throw new Error('无效的 AI 请求参数');
+      const proposal = await ai.runSelectionAction(action, selection, document);
+      return { ok: true, proposal };
+    } catch (error) {
+      return { ok: false, message: error.message || 'AI 操作失败' };
+    }
+  });
+  ipcMain.handle('ai:document', async (event, question, document) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
+    try {
+      if (typeof question !== 'string') throw new Error('无效的问题');
+      const answer = await ai.askDocument(question, document);
+      return { ok: true, answer };
+    } catch (error) {
+      return { ok: false, message: error.message || 'AI 问答失败' };
+    }
+  });
+  ipcMain.handle('ai:review', async (event, instruction, document) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
+    try {
+      if (typeof instruction !== 'string') throw new Error('无效的修改要求');
+      const result = await ai.reviewDocument(instruction, document);
+      return { ok: true, review: result };
+    } catch (error) {
+      return { ok: false, message: error.message || 'AI 审阅失败' };
+    }
+  });
+  ipcMain.handle('ai:provider:status', async (event) => { if (!isTrusted(event)) return { ok: false }; return ai.getProviderStatus(); });
+  ipcMain.handle('ai:provider:save', async (event, config) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
+    try { return { ok: true, status: await ai.saveProviderConfig(config || {}) }; }
+    catch (error) { return { ok: false, message: error.message || '配置保存失败' }; }
+  });
+  ipcMain.handle('ai:provider:clear', async (event) => { if (!isTrusted(event)) return { ok: false }; try { return { ok: true, status: await ai.clearProviderConfig() }; } catch (error) { return { ok: false, message: error.message || '配置清除失败' }; } });
   createWindow();
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
