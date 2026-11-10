@@ -51,13 +51,26 @@ function fingerprint(stat, data) {
   return { size: stat.size, mtimeMs: stat.mtimeMs, hash: crypto.createHash('sha256').update(data).digest('hex') };
 }
 async function currentFingerprint(filePath, io = fsp) {
+  let handle;
   try {
-    const stat = await io.stat(filePath);
+    handle = await io.open(filePath, 'r');
+    const stat = await handle.stat();
     if (!stat.isFile()) throw new Error('所选路径不是文件');
     if (stat.size > MAX_BYTES) return { size: stat.size, mtimeMs: stat.mtimeMs, hash: null, oversized: true };
-    const data = await io.readFile(filePath);
-    return fingerprint(stat, data);
+    const chunks = [];
+    let size = 0;
+    while (size <= MAX_BYTES) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, MAX_BYTES + 1 - size));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, size);
+      if (!bytesRead) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      size += bytesRead;
+    }
+    if (size > MAX_BYTES) return { size, mtimeMs: stat.mtimeMs, hash: null, oversized: true };
+    const data = Buffer.concat(chunks, size);
+    return fingerprint({ ...stat, size }, data);
   } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  finally { if (handle) await handle.close().catch(() => {}); }
 }
 function sameFingerprint(a, b) {
   return !!a && !!b && !a.oversized && !b.oversized && a.size === b.size && a.hash === b.hash;
