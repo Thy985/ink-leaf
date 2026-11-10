@@ -11,6 +11,7 @@ const folders = require('./folders.cjs');
 const updates = require('./update.cjs');
 const { validBareName, safeDocumentName } = require('./names.cjs');
 const { sameDesktopState } = require('./state.cjs');
+const { readJsonFile } = require('./json-store.cjs');
 
 const MAX_TEXT = files.MAX_BYTES;
 const ENTRY = path.resolve(__dirname, '../web/index.html');
@@ -22,6 +23,7 @@ let draftTimer;
 let draftVersion = 0;
 let recoveryQueue = Promise.resolve();
 let closing = false;
+let recoveryWritable = false;
 let state = { text: '', filename: '未命名.md', dirty: false, savedText: '', composing: false, filepath: null };
 let opened = null; // { filepath, fingerprint, eol, bom }
 let sessionState = null; // { version, folders: [{ path, lastDoc, addedAt }], activeFolder, lastDoc }
@@ -46,20 +48,23 @@ async function ensureDataDir() { await fsp.mkdir(userDataDir(), { recursive: tru
 function enqueueRecovery(task) { const run = recoveryQueue.then(task, task); recoveryQueue = run.catch(() => {}); return run; }
 function scheduleRecovery() { clearTimeout(draftTimer); const token = ++draftVersion; draftTimer = setTimeout(() => { draftTimer = null; if (token === draftVersion) saveRecovery(token).catch(() => {}); }, 350); }
 async function saveRecovery(token = draftVersion) {
-  if (token !== draftVersion || !state.dirty || state.composing || closing) return;
+  if (!recoveryWritable || token !== draftVersion || !state.dirty || state.composing || closing) return;
   const body = JSON.stringify({ version: 2, text: state.text, filename: state.filename, filepath: opened?.filepath || null, fingerprint: opened?.fingerprint || null, eol: opened?.eol || 'lf', bom: !!opened?.bom, savedText: state.savedText || '', updatedAt: new Date().toISOString() });
-  return enqueueRecovery(async () => { if (token !== draftVersion || !state.dirty || state.composing || closing) return; await ensureDataDir(); const tmp = `${recoveryPath()}.${process.pid}.${Date.now()}.tmp`; try { await fsp.writeFile(tmp, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 }); await fsp.rename(tmp, recoveryPath()); } catch (error) { try { await fsp.unlink(tmp); } catch {} throw error; } });
+  return enqueueRecovery(async () => { if (!recoveryWritable || token !== draftVersion || !state.dirty || state.composing || closing) return; await ensureDataDir(); const tmp = `${recoveryPath()}.${process.pid}.${Date.now()}.tmp`; try { await fsp.writeFile(tmp, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 }); await fsp.rename(tmp, recoveryPath()); } catch (error) { try { await fsp.unlink(tmp); } catch {} throw error; } });
 }
-async function clearRecovery() { clearTimeout(draftTimer); draftTimer = null; ++draftVersion; return enqueueRecovery(async () => { try { await fsp.unlink(recoveryPath()); } catch (e) { if (e.code !== 'ENOENT') throw e; } }); }
+async function clearRecovery() { clearTimeout(draftTimer); draftTimer = null; ++draftVersion; return enqueueRecovery(async () => { if (!recoveryWritable) return; try { await fsp.unlink(recoveryPath()); } catch (e) { if (e.code !== 'ENOENT') throw e; } }); }
 async function readRecovery() {
+  recoveryWritable = false;
   try {
-    const raw = await fsp.readFile(recoveryPath(), 'utf8');
-    const data = JSON.parse(raw);
-    if (!data || typeof data.text !== 'string' || Buffer.byteLength(data.text, 'utf8') > MAX_TEXT) return null;
+    const result = await readJsonFile(recoveryPath(), fsp);
+    if (!result.exists) { recoveryWritable = true; return null; }
+    const data = result.value;
+    if (!data || typeof data.text !== 'string' || Buffer.byteLength(data.text, 'utf8') > MAX_TEXT) throw new Error('恢复稿格式无效');
     let filepath = null;
     if (data.filepath != null) { files.assertSupportedPath(data.filepath); filepath = data.filepath; }
+    recoveryWritable = true;
     return { text: files.normalize(data.text), filename: typeof data.filename === 'string' ? data.filename : '未命名.md', filepath, fingerprint: data.fingerprint || null, eol: data.eol === 'crlf' ? 'crlf' : 'lf', bom: !!data.bom, savedText: typeof data.savedText === 'string' ? files.normalize(data.savedText) : '', dirty: true };
-  } catch { return null; }
+  } catch (error) { throw new Error(`恢复草稿无法读取，原文件已保留且不会覆盖：${error.message}`); }
 }
 function resultFor(text, filename, filepath, savedText, dirty) { return { text, filename, filepath: filepath || null, savedText: savedText ?? text, ...(dirty === undefined ? {} : { dirty }) }; }
 
@@ -90,8 +95,13 @@ function sanitizeSession(data) {
   };
 }
 async function readSession() {
-  try { return sanitizeSession(JSON.parse(await fsp.readFile(sessionPath(), 'utf8'))); }
-  catch { return sanitizeSession(null); }
+  try {
+    const result = await readJsonFile(sessionPath(), fsp);
+    if (!result.exists) return sanitizeSession(null);
+    const data = result.value;
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !Array.isArray(data.folders) || data.folders.some((entry) => !entry || typeof entry.path !== 'string' || !path.isAbsolute(entry.path))) throw new Error('会话文件格式无效');
+    return sanitizeSession(data);
+  } catch (error) { throw new Error(`文件夹会话无法读取，原文件已保留且不会覆盖：${error.message}`); }
 }
 // Writes are serialized through the recovery queue; every caller awaits the result, so
 // read-modify-write cycles never interleave.
