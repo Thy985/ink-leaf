@@ -38,8 +38,23 @@ function decode(buffer) {
   catch { throw new Error('文件不是有效的 UTF-8 文本，未打开'); }
   return { text: normalize(text), bom, eol: /\r\n/.test(text) ? 'crlf' : 'lf' };
 }
-async function readDocument(filePath, io = fsp) {
+async function readDocument(filePath, io = fsp, options = {}) {
   assertSupportedPath(filePath);
+  if (options.noFollow) {
+    let handle;
+    try {
+      const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0);
+      handle = await io.open(filePath, fs.constants.O_RDONLY | noFollow);
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new Error('所选路径不是文件');
+      if (stat.size > MAX_BYTES) throw new Error('文件超过 10 MB 限制');
+      const data = await handle.readFile();
+      const decoded = decode(data);
+      return { ...decoded, filepath: filePath, filename: path.basename(filePath), fingerprint: fingerprint(await handle.stat(), data) };
+    } finally {
+      if (handle) await handle.close().catch(() => {});
+    }
+  }
   const stat = await io.stat(filePath);
   if (!stat.isFile()) throw new Error('所选路径不是文件');
   if (stat.size > MAX_BYTES) throw new Error('文件超过 10 MB 限制');
