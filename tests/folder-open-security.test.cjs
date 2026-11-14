@@ -58,9 +58,11 @@ test('folderOpen still opens a regular document inside the imported folder', asy
   const userData = await temp(t);
   const root = await temp(t);
   await fs.writeFile(path.join(root, 'inside.md'), '# 内部文档\n');
+  // folderAdd 注册的是 realpath 规范形式，渲染层回传的也是这个形式。
+  const realRoot = await fs.realpath(root);
 
   await withMain(userData, root, async (perform) => {
-    const result = await perform('folderOpen', clean, { folder: root, path: 'inside.md' });
+    const result = await perform('folderOpen', clean, { folder: realRoot, path: 'inside.md' });
     assert.equal(result.text, '# 内部文档\n');
     assert.equal(path.basename(result.filepath), 'inside.md');
   });
@@ -72,6 +74,7 @@ test('folderOpen rejects a file symlink added after the folder was scanned', asy
   const outside = await temp(t);
   const secret = path.join(outside, 'secret.md');
   await fs.writeFile(secret, '# 外部秘密\n');
+  const realRoot = await fs.realpath(root);
 
   await withMain(userData, root, async (perform) => {
     const link = path.join(root, 'external.md');
@@ -83,7 +86,7 @@ test('folderOpen rejects a file symlink added after the folder was scanned', asy
       }
       throw error;
     }
-    await assert.rejects(perform('folderOpen', clean, { folder: root, path: 'external.md' }), /软链接或 junction/);
+    await assert.rejects(perform('folderOpen', clean, { folder: realRoot, path: 'external.md' }), /软链接或 junction/);
   });
 });
 
@@ -92,10 +95,11 @@ test('folderOpen rejects a directory symlink or junction added after the folder 
   const root = await temp(t);
   const outside = await temp(t);
   await fs.writeFile(path.join(outside, 'secret.md'), '# 外部秘密\n');
+  const realRoot = await fs.realpath(root);
 
   await withMain(userData, root, async (perform) => {
     const link = path.join(root, 'escape');
     await fs.symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
-    await assert.rejects(perform('folderOpen', clean, { folder: root, path: 'escape/secret.md' }), /软链接或 junction/);
+    await assert.rejects(perform('folderOpen', clean, { folder: realRoot, path: 'escape/secret.md' }), /软链接或 junction/);
   });
 });

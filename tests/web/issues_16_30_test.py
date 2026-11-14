@@ -111,6 +111,10 @@ with sync_playwright() as playwright:
             page.locator("#source-toggle").click()
         assert page.locator('#editor .ink-image[data-ink-state="pending"]').count() == 1
         assert page.locator("#editor .ink-image-load").count() == 1
+        # 奇数次切换后停在源码视图。打开文档不会自动退出源码视图（apply 会同步
+        # source.value），所以这里显式切回编辑视图，后面的用例才有稳定的起点。
+        page.locator("#source-toggle").click()
+        assert page.locator("#source").is_hidden()
         cases.append("远程图片多次切换/渲染后仍只有一个加载按钮")
 
         # #18: plain text drops keep browser semantics; file drops remain claimed.
@@ -144,6 +148,8 @@ with sync_playwright() as playwright:
             """() => {
               window.__savePickerCalls = 0;
               window.showSaveFilePicker = async () => { window.__savePickerCalls++; throw Object.assign(new Error('test'), { name: 'AbortError' }); };
+              window.__openPickerCalls = 0;
+              window.showOpenFilePicker = async () => { window.__openPickerCalls++; throw Object.assign(new Error('test'), { name: 'AbortError' }); };
               window.__openClicks = 0;
               document.querySelector('#file-input').addEventListener('click', () => window.__openClicks++);
             }"""
@@ -155,12 +161,18 @@ with sync_playwright() as playwright:
         find_input.press("Control+o")
         page.wait_for_timeout(100)
         assert page.evaluate("() => window.__savePickerCalls") == 1
-        assert page.evaluate("() => window.__openClicks") == 1
+        # Chromium 实现了 File System Access，打开走原生选择器而不是 #file-input
+        # 兜底；两者互斥，所以这里断言原生选择器被调用、兜底输入未被点击。
+        assert page.evaluate("() => window.__openPickerCalls") == 1
+        assert page.evaluate("() => window.__openClicks") == 0
         page.locator("#rename").click()
         name_input = page.locator("#name-input")
         name_input.fill("保留输入")
         name_input.press("Control+b")
         assert name_input.input_value() == "保留输入"
+        # 对话框是 showModal 打开的，不关掉会挡住后面的 #save 点击。
+        page.locator('#name-dialog button[value=cancel]').click()
+        assert not page.locator("#name-dialog").evaluate("d => d.open")
         cases.append("查找输入可用 Ctrl+S/Ctrl+O，普通输入与对话框不被编辑快捷键抢夺")
 
         # #27: invalid UTF-8 through the real file input leaves document and handle state intact.

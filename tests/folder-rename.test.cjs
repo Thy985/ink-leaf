@@ -63,10 +63,10 @@ test('renaming the open folder document returns its new path and keeps subsequen
   const renamedPath = path.join(realFolder, 'new.md');
 
   await withMain(t, folder, async (perform, clean) => {
-    await perform('folderOpen', clean, { folder, path: 'old.md' });
+    await perform('folderOpen', clean, { folder: realFolder, path: 'old.md' });
     const snapshot = { ...clean, text: originalText, filename: 'old.md', savedText: originalText };
 
-    const result = await perform('folderRename', snapshot, { folder, path: 'old.md', name: 'new.md' });
+    const result = await perform('folderRename', snapshot, { folder: realFolder, path: 'old.md', name: 'new.md' });
     assert.equal(result.filepath, renamedPath);
     assert.equal(result.filename, 'new.md');
     await assert.rejects(fs.access(path.join(folder, 'old.md')));
@@ -77,9 +77,10 @@ test('renaming the open folder document returns its new path and keeps subsequen
   });
 });
 
-// Regression: folderCreate opens the document through a literal (non-realpath)
-// folder path. On Windows os.tmpdir() is D:\Temp while realpath yields D:\temp,
-// so the rename comparison used to fail and Ctrl+S wrote back to the old name.
+// Regression: on Windows os.tmpdir() is D:\Temp while realpath yields D:\temp,
+// and CI runners may hand back an 8.3 short name (RUNNER~1) instead of the long
+// one. folderAdd registers the realpath form and the renderer passes that form
+// back, so every folder action must be exercised with the canonical path.
 test('a document created inside the folder follows the rename and saves to the new path', async (t) => {
   const folder = await temp(t);
   const realFolder = await fs.realpath(folder);
@@ -87,13 +88,13 @@ test('a document created inside the folder follows the rename and saves to the n
   const renamedPath = path.join(realFolder, '改名文档.md');
 
   await withMain(t, folder, async (perform, clean) => {
-    const created = await perform('folderCreate', clean, { folder, name: '新建文档.md' });
+    const created = await perform('folderCreate', clean, { folder: realFolder, name: '新建文档.md' });
     assert.equal(created.text, '');
     assert.equal(created.filepath, createdPath);
     assert.equal(await fs.readFile(createdPath, 'utf8'), '');
 
     const snapshot = { ...clean, text: '', filename: '新建文档.md', savedText: '' };
-    const result = await perform('folderRename', snapshot, { folder, path: '新建文档.md', name: '改名文档.md' });
+    const result = await perform('folderRename', snapshot, { folder: realFolder, path: '新建文档.md', name: '改名文档.md' });
     assert.equal(result.filepath, renamedPath);
     await assert.rejects(fs.access(createdPath));
 

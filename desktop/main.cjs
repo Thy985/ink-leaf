@@ -122,8 +122,26 @@ async function readSession() {
     if (!result.exists) return sanitizeSession(null);
     const data = result.value;
     if (!data || typeof data !== 'object' || Array.isArray(data) || !Array.isArray(data.folders) || data.folders.some((entry) => !entry || typeof entry.path !== 'string' || !path.isAbsolute(entry.path))) throw new Error('会话文件格式无效');
-    return sanitizeSession(data);
+    return await canonicalizeFolders(sanitizeSession(data));
   } catch (error) { throw new Error(`文件夹会话无法读取，原文件已保留且不会覆盖：${error.message}`); }
+}
+// 文件夹根统一成 realpath 规范形式。目录对话框返回的路径可能是 8.3 短名
+// （Windows 上常见 RUNNER~1 对 runneradmin）或大小写不同的形式，而文档路径
+// 走 realpath。两边形式不一致时，主进程的 withinFolder 与渲染层的树高亮都会
+// 判断失败，因此读取时统一，并顺带把旧会话里的字面路径迁移掉。
+async function canonicalizeFolders(session) {
+  const remap = new Map();
+  for (const folder of session.folders) {
+    let canonical = folder.path;
+    try { canonical = await fsp.realpath(folder.path); } catch {}
+    if (canonical !== folder.path) remap.set(folder.path, canonical);
+  }
+  if (!remap.size) return session;
+  return {
+    ...session,
+    folders: session.folders.map((folder) => remap.has(folder.path) ? { ...folder, path: remap.get(folder.path) } : folder),
+    activeFolder: session.activeFolder && remap.has(session.activeFolder) ? remap.get(session.activeFolder) : session.activeFolder,
+  };
 }
 // Writes are serialized through the recovery queue; every caller awaits the result, so
 // read-modify-write cycles never interleave.
@@ -266,6 +284,9 @@ async function perform(action, rawSnapshot = state, params = null) {
       if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
       folderPath = picked.filePaths[0];
     }
+    // 注册规范形式：对话框返回的路径可能是 8.3 短名或大小写不同的形式，
+    // 而文档路径走 realpath。这里统一，树高亮与重复导入判断才不会出现两套路径。
+    try { folderPath = await fsp.realpath(folderPath); } catch {}
     const scan = await scanRegistered(folderPath);
     if (!sessionState.folders.some((f) => f.path === folderPath)) sessionState = await updateSession({ folders: [...sessionState.folders, { path: folderPath, lastDoc: null, addedAt: new Date().toISOString() }], activeFolder: folderPath });
     else sessionState = await updateSession({ activeFolder: folderPath });

@@ -671,6 +671,11 @@ async function insertImages(files) {
       }
     }
     if (refs.length) {
+      // 先恢复可编辑状态再改模型：replace() → render(sel) → restore() 会
+      // editor.focus()。若此时仍是 contentEditable=false，焦点会静默丢失，
+      // 当前段落也会一直停在源码视图（.block-preview 被 display:none）。
+      editor.contentEditable = previousEditable;
+      source.readOnly = previousReadonly;
       replace(at.start, at.end, refs.join('\n\n'));
       toast(refs.length > 1 ? `已插入 ${refs.length} 张图片` : desktop ? `已插入图片 ${singleName}` : '已插入内嵌图片');
     }
@@ -718,7 +723,10 @@ editor.addEventListener('keydown', (event) => {
   }
 });
 document.addEventListener('selectionchange', () => {
-  if (composing || sourceMode) return;
+  // 失焦后 Chromium 仍会把选区留在已失焦的 contenteditable 里，并再次派发
+  // selectionchange。不拦住的话，blur 刚清掉的高亮会立刻长回来，段落会一直停在
+  // 源码视图（.block-preview 被 display:none），图片、表格等渲染结果都看不到。
+  if (composing || sourceMode || document.activeElement !== editor) return;
   const s = selection();
   if (!s) return;
   beforeSelection = s;
@@ -829,8 +837,12 @@ async function save() {
     } catch (error) {
       if (error?.name === 'AbortError') return;
       if (error?.name === 'PermissionDenied') { toast('未授予文件写入权限，内容仍保留在编辑器中'); return; }
-      toast('写入失败，已改为下载 .md');
+      // 写入失败要让用户看到原因：这里自己完成兜底下载并最后再提示，
+      // 否则会被下面那句“已发起 .md 下载”当场覆盖，用户以为原文件已保存。
       forgetWebHandle();
+      downloadBlob(mdFilename(filename), new Blob([value], { type: 'text/markdown;charset=utf-8' }));
+      savedText = value; updateUI(); persist(); toast('写入失败，已改为下载 .md');
+      return;
     }
   }
   const blob = new Blob([value], { type: 'text/markdown;charset=utf-8' });
@@ -1575,6 +1587,10 @@ function nativeCommand(action, payload) {
 // Declared before the desktop init block: applySession runs during restore above.
 let folderState = { folders: [], activeFolder: null, lastScan: null };
 let folderNameAction = null;
+// 回归测试用的只读诊断：树高亮依赖“当前文件路径”与“活动文件夹根”的对比，
+// 失败时把两边原始值打出来才能判断是不是路径形式不一致。
+window.inkstone.getPath = () => desktopPath || '';
+window.inkstone.getFolderRoot = () => folderState.activeFolder || '';
 if (desktop) {
   $('open').innerHTML = '打开 <kbd>Ctrl O</kbd>';
   $('save').innerHTML = '保存 <kbd>Ctrl S</kbd>';
@@ -1619,8 +1635,12 @@ window.inkstoneReplaceRange = (start, end, value) => replace(start, end, value);
 function folderLabel(p) { const parts = String(p).split(/[\\/]/).filter(Boolean); return parts.length > 1 ? parts[parts.length - 1] : String(p); }
 function activeFolderRel() {
   if (!desktopPath || !folderState.activeFolder) return null;
-  const root = folderState.activeFolder.replace(/\\/g, '/').replace(/\/+$/, '');
-  const doc = desktopPath.replace(/\\/g, '/');
+  // 比较前统一形式：主进程注册的是 realpath 规范路径，兜底处理长路径前缀
+  // 与大小写差异，避免任何一边形式不同就判成“不属于任何文件夹”。
+  const normalize = (value) => String(value).replace(/\\/g, '/').replace(/^\/\/\?\//, '').replace(/\/+$/, '');
+  const root = normalize(folderState.activeFolder);
+  const doc = normalize(desktopPath);
+  // 返回值保留原始大小写：树里的 childRel 是逐字匹配的，变小写会一个都高亮不上。
   return doc.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? doc.slice(root.length + 1) : null;
 }
 function switchPanel(mode) {

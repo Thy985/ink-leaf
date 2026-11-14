@@ -365,6 +365,24 @@ const releaseServer=http.createServer((req,res)=>{
   assert.deepEqual(errors,[]);ok('Electron 渲染无脚本异常');
   const result={passed:cases.length,cases,errors,platform:process.platform,note:'Electron Linux runtime integration test; Windows x64 artifacts are cross-built. Native Windows IME and installer smoke tests remain.'};
   await fs.writeFile(path.join(OUT,'desktop-e2e.json'),JSON.stringify(result,null,2));console.log('ALL PASS',cases.length);
- }catch(error){await fs.writeFile(path.join(OUT,'desktop-e2e-failure.txt'),String(error.stack));if(page&&!page.isClosed())await page.screenshot({path:path.join(OUT,'failure.png')});throw error;}
+ }catch(error){
+  await fs.writeFile(path.join(OUT,'desktop-e2e-failure.txt'),String(error.stack));
+  if(page&&!page.isClosed()){
+    await page.screenshot({path:path.join(OUT,'failure.png')});
+    // 树高亮失败最常见的原因是路径形式不一致（realpath 前缀 / 大小写 / junction）。
+    // 把“当前文件路径”和“活动文件夹根”的原始值一起落盘，避免只能靠截图猜。
+    try{
+      const diag=await page.evaluate(()=>({
+        path:typeof window.inkstone.getPath==='function'?window.inkstone.getPath():null,
+        folderRoot:typeof window.inkstone.getFolderRoot==='function'?window.inkstone.getFolderRoot():null,
+        docs:[...document.querySelectorAll('#folder-tree .folder-doc .doc-name')].map((n)=>({text:n.textContent,active:n.classList.contains('active')})),
+        chips:[...document.querySelectorAll('#folder-chips .chip-name')].map((n)=>({text:n.textContent,active:n.classList.contains('active')})),
+        status:document.querySelector('#status')?.textContent||''
+      }));
+      await fs.writeFile(path.join(OUT,'desktop-e2e-diag.json'),JSON.stringify(diag,null,2));
+    }catch{}
+  }
+  throw error;
+ }
  finally{if(app){try{const proc=app.process();if(process.platform==='win32')require('node:child_process').execFileSync('taskkill',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore'});else proc.kill('SIGKILL');}catch{}}releaseServer.close();}
 })().catch(e=>{console.error(e);process.exit(1);});
