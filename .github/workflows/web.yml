@@ -1,0 +1,60 @@
+name: Web 回归
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: 网页回归 (ubuntu-latest + Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run build:web
+      - run: python3 -m pip install -r tests/web/requirements.txt
+      - run: python3 -m playwright install --with-deps chromium
+
+      # 测试脚本自身会探测 4173 端口，探测不到才会另起服务；
+      # 这里先起一个，保证 smoke / advanced / controls 这类不自带服务器的用例能跑。
+      - name: 运行网页回归
+        run: |
+          set -e
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory web &
+          server=$!
+          trap 'kill $server 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:4173/ && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:4173/
+          for test in smoke advanced controls v04 v05 v06 v07 v08 v09 issues_16_30 mobile; do
+            echo "== tests/web/${test}_test.py =="
+            python3 "tests/web/${test}_test.py"
+          done
+
+      - name: 归档测试结果
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-test-results
+          path: test-results/web/
+          if-no-files-found: ignore
+          retention-days: 14

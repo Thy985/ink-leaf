@@ -1,0 +1,46 @@
+name: Cloudflare Pages
+
+# Cloudflare Pages 项目 ink-leaf 使用「外部 CI/CD」：Cloudflare 侧不构建，
+# 由本工作流产出 dist/site 后用 `wrangler pages deploy` 直传静态资源。
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: 构建并部署 ink-leaf 到 Cloudflare Pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build:site
+      - name: 发布到 Cloudflare Pages
+        # 标签推送由 release.yml 处理，这里跳过；fork 来的 PR 拿不到 Secrets，同样跳过。
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            branch="${{ github.event.pull_request.head.ref }}"
+          else
+            branch="${GITHUB_REF_NAME}"
+          fi
+          npx --yes wrangler@4.162.0 pages deploy dist/site \
+            --project-name ink-leaf \
+            --branch "$branch"

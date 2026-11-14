@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: 构建 Windows 安装包并发布 Release
+    runs-on: windows-latest
+    steps:
+      # 发布说明需要历史记录来列出「本次更新」的提交。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:win
+
+      - name: 生成发布说明（含 SHA-256 校验表）
+        shell: bash
+        run: |
+          set -e
+          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          {
+            echo "墨页 ${GITHUB_REF_NAME} 已发布。"
+            echo
+            echo "Windows 用户下载 \`Inkstone-*-Windows-x64-Setup.exe\` 运行安装，或使用 zip 免安装版解压即用。"
+            echo "桌面版也可以在「帮助 → 检查更新」中直接检测并安装此版本。"
+            echo
+            echo "## 本次更新"
+            echo
+            if [ -n "$prev" ]; then
+              git log --oneline --no-decorate "${prev}..HEAD"
+            else
+              git log --oneline --no-decorate -20
+            fi
+            echo
+            echo "## SHA-256"
+            echo
+            echo "| 文件 | SHA-256 |"
+            echo "| --- | --- |"
+            for file in dist/*-Setup.exe dist/*.zip; do
+              [ -f "$file" ] || continue
+              hash=$(sha256sum "$file" | cut -d ' ' -f 1)
+              echo "| $(basename "$file") | \`$hash\` |"
+            done
+          } > release-body.md
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-body.md
+          files: |
+            dist/*-Setup.exe
+            dist/*.zip
+          fail_on_unmatched_files: true
