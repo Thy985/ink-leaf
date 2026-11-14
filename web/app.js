@@ -3,7 +3,7 @@ import { parseBlocks, serialize, renderInline, buildDocContext } from './model.j
 import { shouldOpenExternalLink } from './link-activation.js';
 import { previewMarkdown, needsPreview, renderDocumentHTML } from './vendor/renderer.js';
 import { beginFolderScan } from './folder-panel-state.js';
-import { initAI, isAIAvailable, toggleAIPanel, handleAICommand, setupSelectionToolbar, openAISettings } from './ai.js';
+import { initAI, isAIAvailable, toggleAIPanel, handleAICommand, setupSelectionToolbar, openAISettings, resetAIContext, markAIDocumentChanged } from './ai.js';
 import { initSearch, isSearchAvailable, toggleSearchPanel } from './search.js';
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +25,8 @@ let compositionTimer;
 let mobileBusy = false;
 let sourceMode = false;
 let filename = '初见.md';
+// 当前 AI 对话绑定的文档标识，换文档时用于清空旧的问答与提案。
+let aiContextKey = null;
 let savedText = SAMPLE;
 let history = [];
 let future = [];
@@ -404,11 +406,23 @@ function persist() {
     } catch { draftAvailable = false; $('status').textContent = '浏览器草稿不可用，请保存 .md'; }
   }, 250);
 }
+// 换文档才清空 AI 上下文；重复打开同一文档时保留对话。
+function syncAIContext(kind) {
+  const key = desktopPath || filename || '';
+  if (kind === 'new' || key !== aiContextKey) {
+    aiContextKey = key;
+    resetAIContext();
+  }
+}
 function apply(value, sel, kind = 'command', addHistory = true) {
+  const switched = kind === 'open' || kind === 'native' || kind === 'new';
+  if (switched) syncAIContext(kind);
   clearTimeout(renderTimer);
   if (addHistory && value !== currentText) remember(selection() || beforeSelection, kind);
   blocks = parseBlocks(value, blocks);
   currentText = text();
+  // 内容变化后标记分析结果过期；切换文档时已在 resetAIContext 中清空。
+  if (!switched) markAIDocumentChanged(currentText);
   if (sourceMode) { source.value = currentText; resizeSource(); updateUI(); if (sel) restore(sel); }
   else render(sel);
   persist();
@@ -563,6 +577,7 @@ function storeDOM() {
     remember(beforeSelection || sel, 'typing');
     blocks = parseBlocks(raw, blocks);
     currentText = text();
+    markAIDocumentChanged(currentText);
   }
   if (sel) activeId = locate(sel.f).block.id;
   render(sel);
@@ -766,6 +781,7 @@ source.addEventListener('input', () => {
   if (composing) return;
   remember(beforeSelection, 'typing');
   blocks = parseBlocks(source.value, blocks); currentText = text(); doc = buildDocContext(blocks); resizeSource(); updateUI(); persist();
+  markAIDocumentChanged(currentText);
 });
 source.addEventListener('beforeinput', () => { beforeSelection = selection(); });
 source.addEventListener('compositionstart', () => { clearTimeout(compositionTimer); beforeSelection = selection(); composing = true; });

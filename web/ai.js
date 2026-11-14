@@ -3,6 +3,8 @@
 
 let aiPanelOpen = false;
 let aiProviderConfigured = false;
+// 最近一次读取到的 Provider 配置（不含 API Key），用于设置面板回填。
+let aiProviderStatus = { name: '', baseUrl: '', model: '', configured: false };
 let aiBusy = false;
 let aiActions = [];
 let aiConversation = [];
@@ -18,12 +20,81 @@ const AI_ACTION_LABELS = {
   logic: '检查逻辑',
 };
 
+const AI_HISTORY_LIMIT = 20;
+const AI_BUSY_BUTTONS = ['ai-send', 'ai-review-send', 'ai-analyze-btn', 'ai-summarize-btn'];
+// 理解型动作只产出回答，不提供"接受"写入，避免用解释文字覆盖原文。
+const AI_READONLY_ACTIONS = new Set(['explain', 'logic']);
+// 文档切换计数：请求返回时若已换文档，结果直接丢弃，避免串到新文档。
+let aiContextVersion = 0;
+// 最近一次分析/摘要对应的文档内容，用于提示结果是否过期。
+let aiAnalysisSnapshot = null;
+let aiAnalysisMode = null;
+let aiAnalysisStale = false;
+const ANALYSIS_PLACEHOLDER = '<div class="ai-analysis-placeholder">点击上方按钮分析当前文档</div>';
+
+// 切换文档时清空问答、审阅、文档分析与待处理提案，避免旧文档的数据串到新文档。
+export function resetAIContext() {
+  aiContextVersion += 1;
+  aiConversation = [];
+  aiProposalSelections.clear();
+  aiAnalysisSnapshot = null;
+  aiAnalysisMode = null;
+  setAnalysisStale(false);
+  const chat = document.getElementById('ai-messages');
+  const review = document.getElementById('ai-review-messages');
+  const analysis = document.getElementById('ai-analysis-content');
+  if (chat) chat.innerHTML = '';
+  if (review) review.innerHTML = '';
+  if (analysis) analysis.innerHTML = ANALYSIS_PLACEHOLDER;
+  hideSelectionToolbar();
+}
+
+// 文档内容变化时由 app.js 调用：与最近一次分析的内容不一致就标记过期。
+export function markAIDocumentChanged(currentText) {
+  if (aiAnalysisSnapshot === null) return;
+  setAnalysisStale(typeof currentText === 'string' ? currentText !== aiAnalysisSnapshot : true);
+}
+
+function setAnalysisStale(stale) {
+  if (aiAnalysisStale === stale) return;
+  aiAnalysisStale = stale;
+  const banner = document.getElementById('ai-analysis-stale');
+  if (banner) banner.hidden = !stale;
+  const tab = document.querySelector('#ai-panel .ai-tab[data-tab="analysis"]');
+  if (tab) tab.classList.toggle('is-stale', stale);
+}
+
+function setAIBusy(value) {
+  aiBusy = value;
+  for (const id of AI_BUSY_BUTTONS) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = value;
+  }
+}
+
+// 多轮对话：只保留最近的往返，和历史一起发给主进程。
+function rememberAIExchange(question, answer) {
+  aiConversation.push({ role: 'user', content: question }, { role: 'assistant', content: answer });
+  if (aiConversation.length > AI_HISTORY_LIMIT) aiConversation = aiConversation.slice(-AI_HISTORY_LIMIT);
+}
+
+function addAILoading(container, text) {
+  if (!container) return null;
+  const message = document.createElement('div');
+  message.className = 'ai-message ai-message-assistant ai-message-loading';
+  message.innerHTML = `<div class="ai-message-content">${escapeHtml(text)}</div>`;
+  container.appendChild(message);
+  container.scrollTop = container.scrollHeight;
+  return message;
+}
+
 export async function initAI() {
   if (!window.desktop?.ai) return;
   try {
     aiActions = await window.desktop.ai.actions();
     const status = await window.desktop.ai.providerStatus();
-    aiProviderConfigured = status.configured;
+    aiProviderStatus = { ...aiProviderStatus, ...status };
+    aiProviderConfigured = !!status.configured;
   } catch {
     aiActions = Object.entries(AI_ACTION_LABELS).map(([key, label]) => ({ key, label }));
   }
@@ -76,12 +147,16 @@ function createAIPanel() {
         <div class="ai-context-notice">AI 将提出修改建议，不会直接修改文档</div>
       </div>
       <div class="ai-tab-page" data-page="analysis">
+        <div class="ai-analysis-stale" id="ai-analysis-stale" hidden>
+          <span>文档已修改，以下结果可能已过期</span>
+          <button type="button" id="ai-analysis-refresh">重新分析</button>
+        </div>
         <div class="ai-analysis-controls">
           <button type="button" id="ai-analyze-btn" class="ai-analysis-btn">分析文档结构</button>
           <button type="button" id="ai-summarize-btn" class="ai-analysis-btn">生成摘要</button>
         </div>
         <div class="ai-analysis-content" id="ai-analysis-content">
-          <div class="ai-analysis-placeholder">点击上方按钮分析当前文档</div>
+          ${ANALYSIS_PLACEHOLDER}
         </div>
       </div>
     </div>`;
@@ -97,6 +172,10 @@ function createAIPanel() {
   panel.querySelector('#ai-instruction').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAIReview(); });
   panel.querySelector('#ai-analyze-btn').onclick = () => analyzeDocument();
   panel.querySelector('#ai-summarize-btn').onclick = () => summarizeDocument();
+  panel.querySelector('#ai-analysis-refresh').onclick = () => {
+    if (aiAnalysisMode === 'summary') summarizeDocument();
+    else analyzeDocument();
+  };
 }
 
 function createSelectionToolbar() {
@@ -147,6 +226,15 @@ function createProviderSettingsDialog() {
     e.preventDefault();
     await clearAIProvider();
   };
+  // 「关闭」是表单里唯一的 submit 按钮，输入框内回车会触发隐式提交直接关掉对话框，
+  // 填了一半的配置就丢了。这里把输入框内的回车改为保存（输入法组合态除外）。
+  dialog.querySelectorAll('input').forEach((input) => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      e.preventDefault();
+      saveAIProvider();
+    });
+  });
 }
 
 function updateAIUI() {
@@ -167,6 +255,8 @@ export function toggleAIPanel(force) {
   if (!panel) return;
   aiPanelOpen = force !== undefined ? force : !aiPanelOpen;
   panel.hidden = !aiPanelOpen;
+  // 面板打开时给内容区让出宽度，避免遮住顶栏与工具栏右侧按钮。
+  document.body.classList.toggle('ai-open', aiPanelOpen);
   if (aiPanelOpen) {
     const input = panel.querySelector('#ai-question');
     if (input) input.focus();
@@ -216,18 +306,20 @@ async function runAISelection(action, selection, existingOffsets) {
   }
   // 记录发起操作时的选区偏移；接受提案时用它定位原文，不再依赖已被面板清空的实时选区。
   const offsets = normalizeOffsets(existingOffsets || window.inkstoneGetSelection?.());
-  aiBusy = true;
+  setAIBusy(true);
   hideSelectionToolbar();
+  const version = aiContextVersion;
   try {
     const document = { text: getText(), filename: getFilename() };
     const result = await window.desktop.ai.selection(action, selection, document);
+    if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || 'AI 操作失败');
     aiProposalSelections.set(result.proposal.id, offsets);
     showAIProposal(result.proposal);
   } catch (error) {
     toast(friendlyError(error, 'AI 操作失败'));
   } finally {
-    aiBusy = false;
+    setAIBusy(false);
   }
 }
 
@@ -260,6 +352,8 @@ function showAIProposal(proposal) {
   toggleAIPanel(true);
   switchAITab('review');
   const container = panel.querySelector('#ai-review-messages');
+  // 解释/检查逻辑产出的是回答而非改写方案，不能"接受"覆盖原文。
+  const readOnly = AI_READONLY_ACTIONS.has(proposal.actionKey);
   const card = document.createElement('div');
   card.className = 'ai-proposal-card';
   card.innerHTML = `
@@ -267,18 +361,26 @@ function showAIProposal(proposal) {
       <span class="ai-proposal-action">${proposal.action}</span>
       <span class="ai-proposal-time">${new Date(proposal.createdAt).toLocaleTimeString()}</span>
     </div>
-    <div class="ai-proposal-original">${escapeHtml(proposal.originalText)}</div>
+    <div class="ai-proposal-original${readOnly ? ' ai-proposal-context' : ''}">${escapeHtml(proposal.originalText)}</div>
     <div class="ai-proposal-suggested">${escapeHtml(proposal.suggestedText)}</div>
     <div class="ai-proposal-actions">
-      <button type="button" class="ai-accept" data-id="${proposal.id}">接受</button>
-      <button type="button" class="ai-reject" data-id="${proposal.id}">拒绝</button>
-      <button type="button" class="ai-regenerate" data-action="${proposal.actionKey || proposal.action}">重新生成</button>
+      ${readOnly ? '' : `<button type="button" class="ai-accept" data-id="${proposal.id}">接受</button>
+      <button type="button" class="ai-reject" data-id="${proposal.id}">拒绝</button>`}
+      <button type="button" class="ai-regenerate" data-action="${proposal.actionKey || ''}">重新生成</button>
+      ${readOnly ? `<button type="button" class="ai-dismiss" data-id="${proposal.id}">关闭</button>` : ''}
     </div>`;
   container.appendChild(card);
   container.scrollTop = container.scrollHeight;
 
-  card.querySelector('.ai-accept').onclick = () => acceptAIProposal(proposal);
-  card.querySelector('.ai-reject').onclick = () => rejectAIProposal(proposal.id);
+  if (!readOnly) {
+    card.querySelector('.ai-accept').onclick = () => acceptAIProposal(proposal);
+    card.querySelector('.ai-reject').onclick = () => rejectAIProposal(proposal.id);
+  } else {
+    card.querySelector('.ai-dismiss').onclick = () => {
+      aiProposalSelections.delete(proposal.id);
+      card.remove();
+    };
+  }
   card.querySelector('.ai-regenerate').onclick = () => runAISelection(proposal.actionKey || 'rewrite', proposal.originalText, aiProposalSelections.get(proposal.id));
 }
 
@@ -317,19 +419,24 @@ async function sendAIQuestion() {
     toast('请先配置 AI 服务');
     return;
   }
-  aiBusy = true;
+  setAIBusy(true);
   const container = document.getElementById('ai-messages');
   addAIMessage(container, 'user', question);
   input.value = '';
+  const pending = addAILoading(container, '正在结合文档思考…');
+  const version = aiContextVersion;
   try {
     const document = { text: getText(), filename: getFilename() };
-    const result = await window.desktop.ai.document(question, document);
+    const result = await window.desktop.ai.document(question, document, aiConversation);
+    if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || 'AI 问答失败');
     addAIMessage(container, 'assistant', result.answer);
+    rememberAIExchange(question, result.answer);
   } catch (error) {
     addAIMessage(container, 'error', friendlyError(error, 'AI 问答失败'));
   } finally {
-    aiBusy = false;
+    pending?.remove();
+    setAIBusy(false);
   }
 }
 
@@ -341,36 +448,47 @@ async function sendAIReview() {
     toast('请先配置 AI 服务');
     return;
   }
-  aiBusy = true;
+  setAIBusy(true);
   const container = document.getElementById('ai-review-messages');
   addAIMessage(container, 'user', instruction);
   input.value = '';
+  const pending = addAILoading(container, '正在审阅文档…');
+  const version = aiContextVersion;
   try {
     const document = { text: getText(), filename: getFilename() };
     const result = await window.desktop.ai.review(instruction, document);
+    if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || 'AI 审阅失败');
     addAIMessage(container, 'assistant', result.review);
   } catch (error) {
     addAIMessage(container, 'error', friendlyError(error, 'AI 审阅失败'));
   } finally {
-    aiBusy = false;
+    pending?.remove();
+    setAIBusy(false);
   }
 }
 
 async function analyzeDocument() {
   const content = document.getElementById('ai-analysis-content');
   if (!content || aiBusy) return;
-  aiBusy = true;
+  setAIBusy(true);
   content.innerHTML = '<div class="ai-analysis-loading">正在分析文档结构…</div>';
+  const version = aiContextVersion;
   try {
     const document = { text: getText(), filename: getFilename() };
     const result = await window.desktop.ai.analyze(document);
+    if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || '文档分析失败');
     renderAnalysis(content, result.analysis);
+    aiAnalysisSnapshot = document.text;
+    aiAnalysisMode = 'structure';
+    markAIDocumentChanged(getText());
   } catch (error) {
-    content.innerHTML = `<div class="ai-analysis-error">${escapeHtml(friendlyError(error, '文档分析失败'))}</div>`;
+    if (version === aiContextVersion) {
+      content.innerHTML = `<div class="ai-analysis-error">${escapeHtml(friendlyError(error, '文档分析失败'))}</div>`;
+    }
   } finally {
-    aiBusy = false;
+    setAIBusy(false);
   }
 }
 
@@ -381,17 +499,24 @@ async function summarizeDocument() {
     toast('请先配置 AI 服务');
     return;
   }
-  aiBusy = true;
+  setAIBusy(true);
   content.innerHTML = '<div class="ai-analysis-loading">正在生成摘要…</div>';
+  const version = aiContextVersion;
   try {
     const document = { text: getText(), filename: getFilename() };
     const result = await window.desktop.ai.summarize(document);
+    if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || '文档摘要失败');
     renderSummary(content, result.summary);
+    aiAnalysisSnapshot = document.text;
+    aiAnalysisMode = 'summary';
+    markAIDocumentChanged(getText());
   } catch (error) {
-    content.innerHTML = `<div class="ai-analysis-error">${escapeHtml(friendlyError(error, '文档摘要失败'))}</div>`;
+    if (version === aiContextVersion) {
+      content.innerHTML = `<div class="ai-analysis-error">${escapeHtml(friendlyError(error, '文档摘要失败'))}</div>`;
+    }
   } finally {
-    aiBusy = false;
+    setAIBusy(false);
   }
 }
 
@@ -426,17 +551,42 @@ function addAIMessage(container, role, text) {
   container.scrollTop = container.scrollHeight;
 }
 
+// 用最近一次读到的配置回填表单；API Key 不回填，留空即视为不修改。
+function fillProviderForm() {
+  const nameInput = document.getElementById('ai-provider-name');
+  if (!nameInput) return;
+  const status = aiProviderStatus || {};
+  nameInput.value = status.name || '';
+  document.getElementById('ai-provider-url').value = status.baseUrl || '';
+  document.getElementById('ai-provider-model').value = status.model || '';
+  const keyInput = document.getElementById('ai-provider-key');
+  keyInput.value = '';
+  keyInput.placeholder = status.configured ? '已配置，留空则不修改' : 'sk-...';
+  const statusEl = document.getElementById('ai-provider-status');
+  if (statusEl) {
+    statusEl.textContent = status.configured
+      ? `当前服务：${status.name || '自定义'} · ${status.model || '默认模型'}`
+      : '尚未配置 AI 服务';
+  }
+}
+
 async function saveAIProvider() {
-  const config = {
-    name: document.getElementById('ai-provider-name')?.value.trim() || '',
-    baseUrl: document.getElementById('ai-provider-url')?.value.trim() || '',
-    model: document.getElementById('ai-provider-model')?.value.trim() || '',
-    apiKey: document.getElementById('ai-provider-key')?.value || '',
-  };
+  const config = {};
+  const name = document.getElementById('ai-provider-name')?.value.trim() || '';
+  const baseUrl = document.getElementById('ai-provider-url')?.value.trim() || '';
+  const model = document.getElementById('ai-provider-model')?.value.trim() || '';
+  const apiKey = document.getElementById('ai-provider-key')?.value.trim() || '';
+  // 留空的字段不提交：空字符串表示"未修改"，避免只改模型时把已保存的 Key 清掉。
+  if (name) config.name = name;
+  if (baseUrl) config.baseUrl = baseUrl;
+  if (model) config.model = model;
+  if (apiKey) config.apiKey = apiKey;
   try {
     const result = await window.desktop.ai.saveProvider(config);
     if (result.ok) {
-      aiProviderConfigured = result.status.configured;
+      aiProviderStatus = { ...aiProviderStatus, ...result.status };
+      aiProviderConfigured = !!result.status.configured;
+      fillProviderForm();
       document.getElementById('ai-provider-status').textContent = result.status.configured ? '✓ 配置已保存' : '配置已保存，但缺少 API Key';
       updateAIUI();
       toast('AI 服务配置已保存');
@@ -453,10 +603,8 @@ async function clearAIProvider() {
     const result = await window.desktop.ai.clearProvider();
     if (result.ok) {
       aiProviderConfigured = false;
-      document.getElementById('ai-provider-name').value = '';
-      document.getElementById('ai-provider-url').value = '';
-      document.getElementById('ai-provider-model').value = '';
-      document.getElementById('ai-provider-key').value = '';
+      aiProviderStatus = { name: '', baseUrl: '', model: '', configured: false };
+      fillProviderForm();
       document.getElementById('ai-provider-status').textContent = '配置已清除';
       updateAIUI();
       toast('AI 服务配置已清除');
@@ -470,7 +618,10 @@ export function openAISettings() {
   const dialog = document.getElementById('ai-settings-dialog');
   if (!dialog) return;
   if (dialog.open) dialog.close();
-  else dialog.showModal();
+  else {
+    fillProviderForm();
+    dialog.showModal();
+  }
 }
 
 export function handleAICommand(action) {

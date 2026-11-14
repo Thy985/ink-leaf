@@ -49,6 +49,44 @@ async function writeProviderConfig(config) {
 
 const DEFAULT_TIMEOUT_MS = 120000;
 
+// 部分网关会在 JSON 后追加 `data: [DONE]`，或直接用 SSE 格式返回（即使请求了 stream:false）。
+// 这里先按 JSON 解析，失败再取出花括号区间 / 逐行解析 data:，避免把正常回答判成解析失败。
+function parseProviderPayload(text) {
+  if (typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try { return JSON.parse(trimmed); } catch { /* 继续尝试非标准格式 */ }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { /* 继续尝试 SSE */ }
+  }
+  let payload = null;
+  for (const line of trimmed.split(/\r?\n/)) {
+    const match = /^data:\s*(.+)$/.exec(line.trim());
+    if (!match || match[1].trim() === '[DONE]') continue;
+    try { payload = JSON.parse(match[1]); } catch { /* 跳过无法解析的事件 */ }
+  }
+  return payload;
+}
+
+// 上游常见配额错误里带 429 / rate limit / rpm，但网关会把它包装成 503，
+// 只看状态码会误报成「服务暂时不可用」，所以文本也要参与判断。
+const RATE_LIMIT_PATTERN = /(^|\D)429(\D|$)|rate.?limit|too many requests|\brpm\b|请求过于频繁|限流/i;
+const MODEL_UNAVAILABLE_PATTERN = /no active credentials|model_not_found|unknown model|invalid model|model does not exist/i;
+
+function providerErrorMessage(statusCode, message) {
+  const text = typeof message === 'string' ? message.trim() : '';
+  if (statusCode === 401) return 'API Key 无效或已过期';
+  if (statusCode === 403) return 'API Key 无权访问该模型，请检查服务配置';
+  if (statusCode === 404) return 'AI 服务地址或模型不存在，请检查服务地址与模型名称';
+  if (statusCode === 429 || RATE_LIMIT_PATTERN.test(text)) return 'AI 服务请求过于频繁，请稍后重试';
+  if (MODEL_UNAVAILABLE_PATTERN.test(text)) return '该模型暂不可用，请检查模型名称或服务地址';
+  if (statusCode >= 500) return 'AI 服务暂时不可用，请稍后重试';
+  if (text) return text;
+  return statusCode >= 400 ? `AI 服务返回错误（HTTP ${statusCode}）` : 'AI 服务返回解析失败';
+}
+
 async function callProvider(messages, options = {}) {
   const config = await readProviderConfig();
   if (!config.apiKey) throw new Error('尚未配置 AI 服务 API Key');
@@ -89,25 +127,20 @@ async function callProvider(messages, options = {}) {
       let responseData = '';
       response.on('data', (chunk) => { responseData += chunk.toString('utf8'); });
       response.on('end', () => {
-        try {
-          const parsed = JSON.parse(responseData);
-          if (parsed.error) {
-            const message = parsed.error.message || 'AI 服务返回错误';
-            if (response.statusCode === 401) finish(reject, new Error('API Key 无效或已过期'));
-            else if (response.statusCode === 429) finish(reject, new Error('AI 服务请求过于频繁，请稍后重试'));
-            else if (response.statusCode >= 500) finish(reject, new Error('AI 服务暂时不可用，请稍后重试'));
-            else finish(reject, new Error(message));
-            return;
-          }
-          const content = parsed.choices?.[0]?.message?.content;
-          if (typeof content !== 'string') {
-            finish(reject, new Error('AI 服务返回格式异常'));
-            return;
-          }
-          finish(resolve, content);
-        } catch {
-          finish(reject, new Error('AI 服务返回解析失败'));
+        const parsed = parseProviderPayload(responseData);
+        if (!parsed || parsed.error) {
+          const raw = parsed && parsed.error
+            ? (typeof parsed.error === 'string' ? parsed.error : parsed.error.message)
+            : '';
+          finish(reject, new Error(providerErrorMessage(response.statusCode, raw)));
+          return;
         }
+        const content = parsed.choices?.[0]?.message?.content;
+        if (typeof content !== 'string') {
+          finish(reject, new Error('AI 服务返回格式异常'));
+          return;
+        }
+        finish(resolve, content);
       });
       response.on('error', (error) => finish(reject, new Error('AI 服务响应失败')));
     });
@@ -135,6 +168,20 @@ const CONTEXT_LIMITS = {
 function truncateText(text, limit) {
   if (typeof text !== 'string' || text.length <= limit) return text;
   return text.slice(0, limit) + '\n\n…（内容已截断）';
+}
+
+// 多轮对话只保留最近的往返，避免历史无限增长挤占上下文。
+const HISTORY_LIMIT = 20;
+
+function sanitizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter((message) => message
+      && (message.role === 'user' || message.role === 'assistant')
+      && typeof message.content === 'string'
+      && message.content.trim())
+    .slice(-HISTORY_LIMIT)
+    .map((message) => ({ role: message.role, content: truncateText(message.content, 4000) }));
 }
 
 function buildSelectionContext(selection, document) {
@@ -272,17 +319,18 @@ async function runSelectionAction(actionKey, selection, document) {
     { role: 'user', content: action.prompt(bounded) },
   ];
   const result = await callProvider(messages, { temperature: 0.4 });
-  return createProposal(action.label, selection, result.trim(), context.notice, action.key);
+  return createProposal(action.label, selection, result.trim(), context.notice, actionKey);
 }
 
-async function askDocument(question, document) {
+async function askDocument(question, document, history) {
   if (!question || !question.trim()) throw new Error('请输入问题');
   if (!document?.text) throw new Error('当前没有可问答的文档');
 
   const context = buildDocumentContext(document);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: `文档内容：\n${context.document}\n\n用户问题：${question}\n\n请基于文档内容回答用户问题。回答中引用关键段落时，请使用「引用：」前缀标注原文。` },
+    ...sanitizeHistory(history),
+    { role: 'user', content: `文档内容：\n${context.document}\n\n用户问题：${question}\n\n请基于文档内容回答用户问题；如果这是对前文对话的追问，请结合对话历史回答。回答中引用关键段落时，请使用「引用：」前缀标注原文。` },
   ];
   return await callProvider(messages, { temperature: 0.2 });
 }
@@ -402,11 +450,14 @@ async function getProviderStatus() {
 
 async function saveProviderConfig(config) {
   const current = await readProviderConfig();
+  // 空字符串/缺省表示"未修改"：设置面板不回填 API Key，用户只改模型名时不能把已保存的 Key 清掉。
+  // 需要丢弃整份配置请使用 clearProviderConfig。
+  const pick = (value, fallback) => (typeof value === 'string' && value.trim() ? value.trim() : fallback);
   const next = {
-    name: typeof config.name === 'string' ? config.name : current.name,
-    baseUrl: typeof config.baseUrl === 'string' ? config.baseUrl.replace(/\/+$/, '') : current.baseUrl,
-    model: typeof config.model === 'string' ? config.model : current.model,
-    apiKey: typeof config.apiKey === 'string' ? config.apiKey : current.apiKey,
+    name: pick(config.name, current.name),
+    baseUrl: pick(config.baseUrl, current.baseUrl).replace(/\/+$/, ''),
+    model: pick(config.model, current.model),
+    apiKey: pick(config.apiKey, current.apiKey),
     maxTokens: typeof config.maxTokens === 'number' ? Math.min(config.maxTokens, 8192) : current.maxTokens,
   };
   if (!/^https?:\/\//i.test(next.baseUrl)) throw new Error('AI 服务地址必须是 HTTP(S) URL');

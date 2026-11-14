@@ -357,6 +357,32 @@ const releaseServer=http.createServer((req,res)=>{
   await cmd('aiSettings');assert.ok(await page.locator('#ai-settings-dialog').isVisible(),'AI 服务设置可打开');
   await page.locator('#ai-settings-dialog button[type="submit"]').click();assert.ok(!(await page.locator('#ai-settings-dialog').isVisible()),'AI 服务设置可关闭');
   await cmd('aiPanel');await cmd('aiPanel');assert.ok(!(await page.locator('#ai-panel').isVisible()),'AI 面板可再次切换');
+  // 文档分析结果过期标记：内容变化后提示，并支持一键重新分析。
+  await cmd('aiPanel');
+  assert.ok(await page.evaluate(()=>document.body.classList.contains('ai-open')),'面板打开时为内容区让位');
+  const aiPanelBox = await page.locator('#ai-panel').boundingBox();
+  const mainBox = await page.locator('.main').boundingBox();
+  assert.ok(mainBox.x + mainBox.width <= aiPanelBox.x + 1,'编辑区不被 AI 面板覆盖');
+  await page.locator('#ai-panel [data-tab="analysis"]').click();
+  await page.locator('#ai-analyze-btn').click();
+  await page.waitForSelector('#ai-analysis-content .ai-stat');
+  assert.ok(!(await page.locator('#ai-analysis-stale').isVisible()),'分析完成后不显示过期提示');
+  if (await page.locator('#source').isVisible()) {
+    await page.locator('#source').fill(`${await md()}\n\n新增一段用于触发过期标记`);
+  } else {
+    await page.locator('#editor').click();
+    await page.keyboard.type('新增一段用于触发过期标记');
+  }
+  await delay(200);
+  assert.ok(await page.locator('#ai-panel').isVisible(),'编辑时 AI 面板保持打开');
+  assert.ok(await page.locator('#ai-analysis-stale').isVisible(),'内容修改后提示分析结果过期');
+  assert.ok(await page.locator('#ai-panel .ai-tab[data-tab="analysis"]').evaluate((el)=>el.classList.contains('is-stale')),'分析页签显示过期标记');
+  await page.locator('#ai-analysis-refresh').click();
+  await page.waitForSelector('#ai-analysis-content .ai-stat');
+  assert.ok(!(await page.locator('#ai-analysis-stale').isVisible()),'重新分析后清除过期提示');
+  await page.locator('#ai-panel .ai-panel-close').click();
+  assert.ok(!(await page.evaluate(()=>document.body.classList.contains('ai-open'))),'关闭面板后恢复布局');
+  ok('文档修改后分析结果标记过期并支持重新分析');
   await page.locator('#panel-outline').click();ok('AI 面板、服务设置与文件夹页签均可正常使用');
   await edit('关闭前先改一笔，让关闭确认弹窗出现');
   await queue('message',2);await cmd('close');assert.equal(await page.locator('#source-toggle').count(),1);ok('关闭窗口选择取消可继续编辑');

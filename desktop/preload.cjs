@@ -63,6 +63,18 @@ function validSearchOptions(value) {
   if (typeof value.regex === 'boolean') options.regex = value.regex;
   return options;
 }
+// 多轮对话历史：只接受 user/assistant 纯文本，条数与单条长度都设上限。
+function validAiHistory(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('无效的对话历史');
+  return value.slice(-20).map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('无效的对话历史');
+    const role = item.role === 'user' || item.role === 'assistant' ? item.role : null;
+    const content = typeof item.content === 'string' ? item.content : '';
+    if (!role || !content.trim()) throw new Error('无效的对话历史');
+    return { role, content: content.slice(0, 4000) };
+  });
+}
 function validProviderConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的 AI 配置');
   const config = {};
@@ -109,7 +121,7 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
   ai: Object.freeze({
     actions() { return ipcRenderer.invoke('ai:actions'); },
     selection(action, selectionText, document) { return ipcRenderer.invoke('ai:selection', validAiAction(action), validAiText(selectionText, 8000), validAiDocument(document)); },
-    document(question, document) { return ipcRenderer.invoke('ai:document', validAiText(question, 4000), validAiDocument(document)); },
+    document(question, document, history) { return ipcRenderer.invoke('ai:document', validAiText(question, 4000), validAiDocument(document), validAiHistory(history)); },
     review(instruction, document) { return ipcRenderer.invoke('ai:review', validAiText(instruction, 4000), validAiDocument(document)); },
     analyze(document) { return ipcRenderer.invoke('ai:analyze', validAiDocument(document)); },
     summarize(document) { return ipcRenderer.invoke('ai:summarize', validAiDocument(document)); },

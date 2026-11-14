@@ -47,8 +47,16 @@ function assertSnapshot(snapshot) {
   if (Buffer.byteLength(snapshot.text, 'utf8') > MAX_TEXT || Buffer.byteLength(snapshot.savedText, 'utf8') > MAX_TEXT) throw new Error('文档超过 10 MB 限制');
   return { text: files.normalize(snapshot.text), filename: snapshot.filename.slice(0, 120), dirty: snapshot.dirty, savedText: files.normalize(snapshot.savedText), composing: !!snapshot.composing };
 }
+// Windows 盘符大小写不参与路径含义（file:///D:/… 与 file:///d:/… 是同一个文件），
+// 但字符串比较区分大小写：用 `electron d:/path` 启动时页面 URL 会被规范成大写的盘符，
+// 而 allowedUrl 来自 __dirname，仍保留启动参数里的小写，全等比较会让所有 IPC 被判定为不受信任。
+function sameEntryUrl(url) {
+  if (typeof url !== 'string') return false;
+  if (url === allowedUrl) return true;
+  return process.platform === 'win32' && url.toLowerCase() === allowedUrl.toLowerCase();
+}
 function isTrusted(event) {
-  try { return event.senderFrame && event.senderFrame.url === allowedUrl; } catch { return false; }
+  try { return !!event.senderFrame && sameEntryUrl(event.senderFrame.url); } catch { return false; }
 }
 async function ensureDataDir() { await fsp.mkdir(userDataDir(), { recursive: true }); }
 function enqueueRecovery(task) { const run = recoveryQueue.then(task, task); recoveryQueue = run.catch(() => {}); return run; }
@@ -517,11 +525,11 @@ app.whenReady().then(async () => {
       return { ok: false, message: error.message || 'AI 操作失败' };
     }
   });
-  ipcMain.handle('ai:document', async (event, question, document) => {
+  ipcMain.handle('ai:document', async (event, question, document, history) => {
     if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
     try {
       if (typeof question !== 'string') throw new Error('无效的问题');
-      const answer = await ai.askDocument(question, document);
+      const answer = await ai.askDocument(question, document, Array.isArray(history) ? history : []);
       return { ok: true, answer };
     } catch (error) {
       return { ok: false, message: error.message || 'AI 问答失败' };

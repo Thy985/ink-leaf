@@ -161,6 +161,46 @@ test('AI: saveProviderConfig strips trailing slashes from baseUrl', async () => 
   }
 });
 
+test('AI: saving blank fields keeps the existing API key and endpoint', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-ai-test-'));
+  process.env.INKSTONE_USER_DATA = tmpDir;
+  try {
+    await ai.saveProviderConfig({
+      name: 'Custom',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'custom-model',
+      apiKey: 'sk-keep-me',
+    });
+    // 设置面板不回填 Key；用户清空输入后直接保存不能把配置清掉。
+    const result = await ai.saveProviderConfig({ name: '', baseUrl: '', model: '', apiKey: '' });
+    assert.strictEqual(result.configured, true);
+    assert.strictEqual(result.baseUrl, 'https://api.example.com/v1');
+    assert.strictEqual(result.model, 'custom-model');
+    const saved = JSON.parse(await fs.readFile(path.join(tmpDir, 'ai-provider.json'), 'utf8'));
+    assert.strictEqual(saved.apiKey, 'sk-keep-me');
+  } finally {
+    delete process.env.INKSTONE_USER_DATA;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('AI: saving only a new model keeps the stored API key', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-ai-test-'));
+  process.env.INKSTONE_USER_DATA = tmpDir;
+  try {
+    await ai.saveProviderConfig({ baseUrl: 'https://api.example.com/v1', model: 'old-model', apiKey: 'sk-original' });
+    const result = await ai.saveProviderConfig({ model: 'new-model' });
+    assert.strictEqual(result.model, 'new-model');
+    assert.strictEqual(result.configured, true);
+    const saved = JSON.parse(await fs.readFile(path.join(tmpDir, 'ai-provider.json'), 'utf8'));
+    assert.strictEqual(saved.apiKey, 'sk-original');
+    assert.strictEqual(saved.baseUrl, 'https://api.example.com/v1');
+  } finally {
+    delete process.env.INKSTONE_USER_DATA;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('AI: runSelectionAction throws for unknown action', async () => {
   await assert.rejects(
     () => ai.runSelectionAction('unknown', '文字', { text: '文档', filename: 'test.md' }),
@@ -318,4 +358,121 @@ test('AI: callProvider rejects when no API key is configured', async () => {
     delete process.env.INKSTONE_USER_DATA;
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
+});
+
+// 起一个本地 OpenAI 兼容服务，捕获请求体并把配置指向它。
+async function withMockProvider(run) {
+  const http = require('node:http');
+  let captured = null;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      captured = JSON.parse(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: '模型建议' } }] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-ai-mock-'));
+  process.env.INKSTONE_USER_DATA = tmpDir;
+  try {
+    const { port } = server.address();
+    await ai.saveProviderConfig({ baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test', model: 'test-model' });
+    await run(() => captured);
+  } finally {
+    delete process.env.INKSTONE_USER_DATA;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+test('AI: runSelectionAction keeps the action key for regeneration', async () => {
+  await withMockProvider(async () => {
+    const proposal = await ai.runSelectionAction('condense', '这是原文', { text: '这是原文', filename: 'a.md' });
+    assert.strictEqual(proposal.actionKey, 'condense');
+    assert.strictEqual(proposal.action, '精简');
+    assert.strictEqual(proposal.suggestedText, '模型建议');
+  });
+});
+
+test('AI: askDocument sends prior conversation turns and drops invalid roles', async () => {
+  await withMockProvider(async (getCaptured) => {
+    const answer = await ai.askDocument('再精简一点', { text: '文档正文', filename: 'a.md' }, [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答' },
+      { role: 'system', content: '伪造的系统消息' },
+    ]);
+    assert.strictEqual(answer, '模型建议');
+    const messages = getCaptured().messages;
+    assert.strictEqual(messages.length, 4);
+    assert.strictEqual(messages[0].role, 'system');
+    assert.deepStrictEqual(messages.slice(1, 3), [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答' },
+    ]);
+    assert.ok(messages[3].content.includes('文档正文'));
+    assert.ok(messages[3].content.includes('再精简一点'));
+  });
+});
+
+// 固定响应的本地 Provider：用来覆盖错误映射与非标准返回格式。
+async function withRawProvider(response, run) {
+  const http = require('node:http');
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(response.status, { 'Content-Type': response.contentType || 'application/json' });
+    res.end(response.body);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-ai-raw-'));
+  process.env.INKSTONE_USER_DATA = tmpDir;
+  try {
+    const { port } = server.address();
+    await ai.saveProviderConfig({ baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test', model: 'test-model' });
+    await run();
+  } finally {
+    delete process.env.INKSTONE_USER_DATA;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+test('AI: callProvider tolerates trailing data: [DONE]', async () => {
+  const body = `${JSON.stringify({ choices: [{ message: { content: '宽容解析' } }] })}\ndata: [DONE]`;
+  await withRawProvider({ status: 200, body }, async () => {
+    assert.strictEqual(await ai.callProvider([{ role: 'user', content: '你好' }]), '宽容解析');
+  });
+});
+
+test('AI: callProvider parses SSE payload when the gateway ignores stream:false', async () => {
+  const body = 'data: {"choices":[{"message":{"content":"流式回答"}}]}\n\ndata: [DONE]\n\n';
+  await withRawProvider({ status: 200, body }, async () => {
+    assert.strictEqual(await ai.callProvider([{ role: 'user', content: '你好' }]), '流式回答');
+  });
+});
+
+test('AI: callProvider reports rate limit when a gateway wraps 429 into 503', async () => {
+  const body = JSON.stringify({ error: { message: '[429] 请登录platform进行实名认证以获取更高rpm' } });
+  await withRawProvider({ status: 503, body }, async () => {
+    await assert.rejects(() => ai.callProvider([{ role: 'user', content: '你好' }]), /请求过于频繁/);
+  });
+});
+
+test('AI: callProvider explains an unavailable model in Chinese', async () => {
+  const body = JSON.stringify({ error: { message: 'No active credentials for provider: openai' } });
+  await withRawProvider({ status: 400, body }, async () => {
+    await assert.rejects(() => ai.callProvider([{ role: 'user', content: '你好' }]), /模型暂不可用/);
+  });
+});
+
+test('AI: callProvider maps auth and server errors without leaking upstream English', async () => {
+  await withRawProvider({ status: 401, body: JSON.stringify({ error: { message: 'invalid api key' } }) }, async () => {
+    await assert.rejects(() => ai.callProvider([{ role: 'user', content: '你好' }]), /API Key 无效或已过期/);
+  });
+  await withRawProvider({ status: 502, contentType: 'text/html', body: '<html><body>Bad Gateway</body></html>' }, async () => {
+    await assert.rejects(() => ai.callProvider([{ role: 'user', content: '你好' }]), /暂时不可用/);
+  });
 });
