@@ -1409,7 +1409,145 @@ async function runDesktop(action, params) {
     if (freeze) { editor.contentEditable = 'true'; source.readOnly = false; }
   }
 }
+// --- 更新：检查 GitHub Releases、下载安装包并安装，不再需要跳浏览器手动下载。 ---
+const updateState = { asset: null, filePath: null, releaseUrl: '', version: '', downloading: false, installing: false };
+const isUpdateAvailable = () => Boolean(desktop && desktop.update);
+function megabytes(bytes) { return (bytes / 1024 / 1024).toFixed(1); }
+function resetUpdateDialog() {
+  const dialog = $('update-dialog');
+  dialog.returnValue = '';
+  $('update-title').textContent = '检查更新';
+  $('update-message').textContent = '正在查询最新版本…';
+  $('update-progress').hidden = true;
+  $('update-bar').value = 0;
+  $('update-progress-text').textContent = '';
+  const confirm = $('update-confirm');
+  confirm.value = 'ok';
+  confirm.textContent = '好';
+  confirm.disabled = false;
+  $('update-reveal').hidden = true;
+  $('update-release').hidden = true;
+}
+function renderUpdateResult(result) {
+  const dialog = $('update-dialog');
+  if (!dialog.open) return;
+  if (result.status === 'update-available') {
+    updateState.asset = result.asset || null;
+    updateState.releaseUrl = result.releaseUrl || '';
+    updateState.version = result.version || '';
+    updateState.filePath = null;
+    const size = result.asset && result.asset.size ? ` · ${megabytes(result.asset.size)} MB` : '';
+    $('update-title').textContent = '发现新版本';
+    $('update-message').textContent = `墨页 ${result.version} 已发布（当前 v${result.currentVersion}）${size}。可以直接下载并安装，无需打开浏览器。`;
+    $('update-confirm').value = 'download';
+    $('update-confirm').textContent = '下载并安装';
+    $('update-release').hidden = false;
+  } else if (result.status === 'up-to-date') {
+    $('update-title').textContent = '检查更新';
+    $('update-message').textContent = `当前已是最新版本（v${result.currentVersion}）。`;
+    $('update-confirm').value = 'ok';
+    $('update-confirm').textContent = '好';
+  } else if (result.status === 'no-asset') {
+    updateState.releaseUrl = result.releaseUrl || '';
+    updateState.asset = null;
+    updateState.filePath = null;
+    $('update-title').textContent = '发现新版本';
+    $('update-message').textContent = `墨页 ${result.version} 已发布（当前 v${result.currentVersion}），但发布中没有适用于当前平台的安装包。`;
+    $('update-confirm').value = 'ok';
+    $('update-confirm').textContent = '好';
+    $('update-release').hidden = false;
+  } else {
+    $('update-title').textContent = '检查更新失败';
+    $('update-message').textContent = result.message || '无法获取最新版本信息，请稍后重试。';
+    $('update-confirm').value = 'ok';
+    $('update-confirm').textContent = '好';
+  }
+}
+async function checkForUpdatesFlow() {
+  if (!isUpdateAvailable() || !desktopReady) return;
+  resetUpdateDialog();
+  $('update-dialog').showModal();
+  try {
+    const result = await desktop.update.check();
+    renderUpdateResult(result || { status: 'failed', message: '检查更新失败' });
+  } catch (error) {
+    renderUpdateResult({ status: 'failed', message: friendlyError(error, '检查更新失败') });
+  }
+}
+function updateProgressText(received, total) {
+  if (!total) return `已下载 ${megabytes(received)} MB`;
+  return `已下载 ${megabytes(received)} / ${megabytes(total)} MB（${Math.min(100, Math.round((received / total) * 100))}%）`;
+}
+async function startUpdateDownload() {
+  if (!updateState.asset || updateState.downloading) return;
+  updateState.downloading = true;
+  $('update-progress').hidden = false;
+  $('update-message').textContent = `正在下载 ${updateState.asset.name}…`;
+  $('update-confirm').disabled = true;
+  $('update-confirm').textContent = '下载中…';
+  try {
+    const result = await desktop.update.download(updateState.asset);
+    updateState.filePath = result.filePath;
+    $('update-progress').hidden = true;
+    $('update-confirm').disabled = false;
+    $('update-confirm').value = 'install';
+    $('update-confirm').textContent = '立即安装';
+    $('update-reveal').hidden = false;
+    const dirtyNote = text() !== savedText ? '当前有未保存的修改，安装会丢弃它们。' : '';
+    $('update-message').textContent = `已下载 ${megabytes(result.bytes)} MB（${result.verified ? '校验通过' : '未校验'}）。点击「立即安装」将退出应用并安装新版本。${dirtyNote}`;
+  } catch (error) {
+    updateState.filePath = null;
+    $('update-progress').hidden = true;
+    $('update-confirm').disabled = false;
+    $('update-confirm').value = 'download';
+    $('update-confirm').textContent = '重新下载';
+    $('update-message').textContent = friendlyError(error, '下载失败，请重试');
+  } finally {
+    updateState.downloading = false;
+  }
+}
+async function startUpdateInstall() {
+  if (!updateState.filePath || updateState.installing) return;
+  updateState.installing = true;
+  $('update-confirm').disabled = true;
+  $('update-confirm').textContent = '正在安装…';
+  try {
+    const result = await desktop.update.install(updateState.filePath);
+    if (!result.ok) throw new Error(result.message || '安装失败');
+    // 成功时应用会立即退出，无需再更新界面。
+  } catch (error) {
+    updateState.installing = false;
+    $('update-confirm').disabled = false;
+    $('update-confirm').textContent = '立即安装';
+    $('update-message').textContent = friendlyError(error, '安装失败，可点击「打开所在文件夹」手动运行安装包');
+  }
+}
+function initUpdateUI() {
+  const dialog = $('update-dialog');
+  if (!dialog || !isUpdateAvailable()) return;
+  dialog.addEventListener('close', () => {
+    const action = dialog.returnValue;
+    dialog.returnValue = '';
+    if (action === 'download') startUpdateDownload();
+    else if (action === 'install') startUpdateInstall();
+  });
+  $('update-reveal').onclick = async () => {
+    if (!updateState.filePath) return;
+    try { await desktop.update.reveal(updateState.filePath); }
+    catch (error) { toast(friendlyError(error, '无法定位安装包')); }
+  };
+  $('update-release').onclick = () => {
+    if (updateState.releaseUrl) window.open(updateState.releaseUrl, '_blank', 'noopener');
+  };
+  desktop.update.onProgress((progress) => {
+    if ($('update-progress').hidden) return;
+    $('update-bar').value = progress.total ? Math.min(100, Math.round((progress.received / progress.total) * 100)) : 0;
+    $('update-progress-text').textContent = updateProgressText(progress.received, progress.total);
+  });
+}
 function nativeCommand(action, payload) {
+  // 更新检查不依赖文件操作状态，单独先行处理。
+  if (action === 'checkUpdates') { checkForUpdatesFlow(); return; }
   if (desktopBusy || composing) {
     if (composing) toast('请先完成输入法选词');
     else if (action === 'close') toast('正在处理文件操作，完成后可关闭窗口');
@@ -1451,14 +1589,17 @@ if (desktop) {
   desktopReady = true;
   updateUI(); persist();
   // Initialize AI after restore so the panel knows the provider status.
+  // 内部已做容错；这里再兜底，避免未捕获的 Promise 拒绝影响主流程。
   if (isAIAvailable()) {
-    initAI();
+    initAI().catch((error) => console.error('AI 初始化失败', error));
     setupSelectionToolbar();
   }
   // Initialize search panel (desktop only).
   if (isSearchAvailable()) {
     initSearch();
   }
+  // Initialize the in-app update dialog (desktop only).
+  initUpdateUI();
 }
 
 // Expose helpers for the AI and search modules (renderer-side globals).
@@ -1468,6 +1609,9 @@ window.inkstoneUpdateUI = () => { updateUI(); };
 window.inkstoneToast = toast;
 window.inkstoneSnapshot = desktopSnapshot;
 window.inkstoneInstallNativeDocument = installNativeDocument;
+// 选区偏移（序列化文本下标）与模型层替换，供 AI 提案接受/重新生成使用。
+window.inkstoneGetSelection = () => { const s = selection(); return s ? { ...s } : null; };
+window.inkstoneReplaceRange = (start, end, value) => replace(start, end, value);
 
 // --- Folder panel: read-only import of a local folder (desktop only). ---
 // Every filesystem operation goes through desktop.perform's allowlist; the renderer

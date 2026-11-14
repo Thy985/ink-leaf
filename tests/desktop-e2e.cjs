@@ -5,6 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const zlib = require('node:zlib');
 const http = require('node:http');
+const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const ROOT=path.resolve(__dirname,'..');
 const OUT=path.join(ROOT,'test-results');
@@ -21,12 +22,16 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
  const temp=await fs.mkdtemp(path.join(os.tmpdir(),'inkstone-e2e-'));
  const user=path.join(temp,'userdata');
  const fixtures=path.join(temp,'files');await fs.mkdir(fixtures);
- // Stub GitHub Releases endpoint so the update check never leaves the machine.
- const releaseServer=http.createServer((req,res)=>{
-  const releases={'/v99':{tag_name:'v99.0.0',html_url:'https://example.com/ink-leaf/releases/tag/v99.0.0'},'/same':{tag_name:'v0.10.0',html_url:'https://example.com/ink-leaf/releases/tag/v0.9.0'}};
-  res.writeHead(req.url==='/error'?500:200,{'content-type':'application/json'});
-  res.end(JSON.stringify(releases[req.url]||{}));
- });
+// Stub GitHub Releases endpoint + 安装包下载，让更新链路完全跑在本机。
+const setupBytes=Buffer.from(`MZ${'inkstone-e2e-setup'.repeat(128)}`);
+const setupDigest='sha256:'+crypto.createHash('sha256').update(setupBytes).digest('hex');
+const setupName='Inkstone-99.0.0-Windows-x64-Setup.exe';
+const releaseServer=http.createServer((req,res)=>{
+ if(req.url==='/download/setup.exe'){res.writeHead(200,{'content-type':'application/octet-stream','content-length':String(setupBytes.length)});res.end(setupBytes);return;}
+ const releases={'/v99':{tag_name:'v99.0.0',html_url:'https://example.com/ink-leaf/releases/tag/v99.0.0',assets:[{name:setupName,browser_download_url:`${releaseBase}/download/setup.exe`,size:setupBytes.length,digest:setupDigest}]},'/same':{tag_name:`v${require('../package.json').version}`,html_url:'https://example.com/ink-leaf/releases/tag/v0.9.0'},'/missing':{tag_name:'v99.0.0',html_url:'https://example.com/ink-leaf/releases/tag/v99.0.0',assets:[]}};
+ res.writeHead(req.url==='/error'?500:200,{'content-type':'application/json'});
+ res.end(JSON.stringify(releases[req.url]||{}));
+});
  const releaseBase=await new Promise(r=>releaseServer.listen(0,'127.0.0.1',()=>r(`http://127.0.0.1:${releaseServer.address().port}`)));
  let app,page; const errors=[];
  async function launch(){
@@ -64,20 +69,38 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
    const entries=Menu.getApplicationMenu().items.flatMap(i=>i.submenu?.items||[]);
    for(const accelerator of ['CommandOrControl+N','CommandOrControl+O','CommandOrControl+S','CommandOrControl+Shift+S','CommandOrControl+K'])if(!entries.some(i=>i.accelerator===accelerator))throw Error('Missing accelerator '+accelerator);
   });ok('Windows 原生菜单与文件/格式快捷键注册');
-  // v0.10: the help menu checks GitHub Releases through the stubbed endpoint.
+  // v0.10: 帮助菜单检查更新 → 应用内对话框就地下载安装包，不再跳浏览器。
   const clickUpdates=()=>app.evaluate(({Menu})=>Menu.getApplicationMenu().getMenuItemById('check-updates').click());
-  const lastMessage=()=>app.evaluate(()=>{const log=globalThis.__testDialogs.messageLog;return log.length?{title:log[log.length-1][1].title,message:log[log.length-1][1].message}:null;});
+  const updateDialog=()=>page.evaluate(()=>({open:document.getElementById('update-dialog').open,title:document.getElementById('update-title').textContent,message:document.getElementById('update-message').textContent,value:document.getElementById('update-confirm').value,text:document.getElementById('update-confirm').textContent,progressHidden:document.getElementById('update-progress').hidden,revealHidden:document.getElementById('update-reveal').hidden}));
+  const closeUpdate=()=>page.locator('#update-dialog').evaluate(d=>d.close());
   await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/v99';},releaseBase);
-  await queue('message',0);await clickUpdates();await delay(400);
-  const newer=await lastMessage();assert.equal(newer.title,'发现新版本');assert(newer.message.includes('99.0.0'),newer.message);
-  assert.deepEqual(await app.evaluate(()=>globalThis.__testDialogs.external),['https://example.com/ink-leaf/releases/tag/v99.0.0']);
+  await clickUpdates();await delay(400);
+  const newer=await updateDialog();
+  assert.equal(newer.open,true);assert.equal(newer.title,'发现新版本');assert(newer.message.includes('99.0.0'),newer.message);
+  assert.equal(newer.value,'download');assert.equal(newer.text,'下载并安装');assert.equal(newer.revealHidden,true);
+  await page.locator('#update-confirm').click();
+  await page.waitForFunction(()=>document.getElementById('update-confirm').value==='install');
+  const downloaded=await updateDialog();
+  assert.equal(downloaded.progressHidden,true);assert.equal(downloaded.text,'立即安装');assert.equal(downloaded.revealHidden,false);
+  const setupPath=path.join(os.tmpdir(),'inkstone-update',setupName);
+  assert.equal((await waitFile(setupPath,10000)).size,setupBytes.length);
+  assert.equal(crypto.createHash('sha256').update(await fs.readFile(setupPath)).digest('hex'),setupDigest.slice(7));
+  assert.deepEqual(await app.evaluate(()=>globalThis.__testDialogs.external),[]);
+  await closeUpdate();
   await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/same';},releaseBase);
   await clickUpdates();await delay(400);
-  assert((await lastMessage()).message.includes('已是最新版本'));
+  assert((await updateDialog()).message.includes('已是最新版本'));
+  await closeUpdate();
+  await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/missing';},releaseBase);
+  await clickUpdates();await delay(400);
+  const missing=await updateDialog();assert.equal(missing.title,'发现新版本');assert(missing.message.includes('没有适用于当前平台'),missing.message);assert.equal(missing.value,'ok');
+  await closeUpdate();
   await app.evaluate((_,base)=>{process.env.INKSTONE_UPDATE_API=base+'/error';},releaseBase);
   await clickUpdates();await delay(400);
-  assert.equal((await lastMessage()).title,'检查更新失败');
-  ok('帮助菜单检查更新：发现新版本/已是最新/失败提示');
+  assert.equal((await updateDialog()).title,'检查更新失败');
+  await closeUpdate();
+  await fs.rm(path.join(os.tmpdir(),'inkstone-update'),{recursive:true,force:true});
+  ok('帮助菜单检查更新：就地下载安装包，不跳转浏览器');
   const first=path.join(fixtures,'原稿.md');await fs.writeFile(first,'\ufeff# 本地文档\r\n正文\r\n');
   await open(first);await assertMD('# 本地文档\n正文\n');ok('原生打开对话框与中文文件名读取');
   await edit('# 修改后\n本地内容\n');await page.keyboard.press('Control+s');await delay(250);
@@ -112,13 +135,7 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   assert((await page.locator('#editor .ink-image-error .ink-image-note').first().textContent()).includes('文档目录内'));
   assert((await page.locator('#editor .ink-image-error .ink-image-note').nth(1).textContent()).includes('找不到'));
   await assertMD(imageDoc);ok('本地图片经桥接读取，越界与缺失被拒绝');
-  // #20: saving the same relative image reference into another directory must
-  // clear the document-directory cache and reload the image through Electron.
-  const dirA=path.join(temp,'图片目录A');const dirB=path.join(temp,'图片目录B');await fs.mkdir(dirA);await fs.mkdir(dirB);
-  const imageDocPath=path.join(dirA,'换目录.md');await fs.writeFile(imageDocPath,'# 换目录\n\n![同名](同名.png)\n');
-  await fs.writeFile(path.join(dirA,'同名.png'),noisePng(1,1));await fs.writeFile(path.join(dirB,'同名.png'),noisePng(2,2));
-  await open(imageDocPath);await page.waitForSelector('#editor .ink-image-ready img');assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),1);
-  const imageDocB=path.join(dirB,'换目录.md');await saveAs(imageDocB);await page.waitForSelector('#editor .ink-image-ready img');await page.waitForFunction(()=>document.querySelector('#editor .ink-image-ready img')?.naturalWidth===2);assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),2);ok('另存为到新目录后同名相对图片经 Electron 桥接重新读取，未命中旧缓存');
+  // 导出用例依赖当前文档仍是「图集」；必须排在换目录用例之前。
   const exported=path.join(fixtures,'导出.html');
   await queue('save',{canceled:false,filePath:exported});
   await cmd('exportHtml');
@@ -130,6 +147,13 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   assert(html.includes('data:image/png;base64,'),'cached local images embed as data URLs');
   assert(html.includes('ink-export-missing'),'unresolved images stay visible placeholders');
   ok('菜单导出 HTML 生成离线单文件');
+  // #20: saving the same relative image reference into another directory must
+  // clear the document-directory cache and reload the image through Electron.
+  const dirA=path.join(temp,'图片目录A');const dirB=path.join(temp,'图片目录B');await fs.mkdir(dirA);await fs.mkdir(dirB);
+  const imageDocPath=path.join(dirA,'换目录.md');await fs.writeFile(imageDocPath,'# 换目录\n\n![同名](同名.png)\n');
+  await fs.writeFile(path.join(dirA,'同名.png'),noisePng(1,1));await fs.writeFile(path.join(dirB,'同名.png'),noisePng(2,2));
+  await open(imageDocPath);await page.waitForSelector('#editor .ink-image-ready img');assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),1);
+  const imageDocB=path.join(dirB,'换目录.md');await saveAs(imageDocB);await page.waitForSelector('#editor .ink-image-ready img');await page.waitForFunction(()=>document.querySelector('#editor .ink-image-ready img')?.naturalWidth===2);assert.equal(await page.evaluate(()=>document.querySelector('#editor .ink-image-ready img').naturalWidth),2);ok('另存为到新目录后同名相对图片经 Electron 桥接重新读取，未命中旧缓存');
   // Unclosed dollar display math remains a math block through EOF, matching the editor model.
   await edit('$$\nx^2\n');
   const openMathExport=path.join(fixtures,'未闭合公式.html');
@@ -139,6 +163,8 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   const openMathHtml=await fs.readFile(openMathExport,'utf8');
   assert(openMathHtml.includes('<math'),'unclosed $$ math must export as MathML through EOF');
   ok('未闭合 $$ display math 导出为 MathML，延伸至文档末尾');
+  // 未闭合公式会把后续粘贴的内容吞进数学块；先还原成带图文档再测粘贴。
+  await edit('# 换目录\n\n![同名](同名.png)\n');
   await page.locator('#source-toggle').click();
   await page.locator('#status').click();
   // v0.7: pasting a screenshot writes it beside the saved document and renders it.
@@ -155,11 +181,12 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
     document.getElementById('editor').dispatchEvent(ev);
   }, png.toString('base64'));
   await delay(400);
-  const inserted = (await fs.readdir(fixtures)).find((n) => /^粘贴图片-\d{8}-\d{6}(-\d+)?\.png$/.test(n));
+  const inserted = (await fs.readdir(dirB)).find((n) => /^粘贴图片-\d{8}-\d{6}(-\d+)?\.png$/.test(n));
   assert(inserted, 'clipboard image written beside the document');
-  assert.equal((await fs.readFile(path.join(fixtures, inserted))).subarray(1, 4).toString('latin1'), 'PNG');
+  assert.equal((await fs.readFile(path.join(dirB, inserted))).subarray(1, 4).toString('latin1'), 'PNG');
   assert((await md()).includes(`![粘贴图片](${inserted})`), 'markdown gains a relative image reference');
-  await page.locator('#status').click();
+  // 粘贴后图片块处于编辑态（显示源码而非预览）；点击标题块让它退出 active，预览才会显示。
+  await page.locator('#editor > *').first().click();
   await page.waitForSelector('#editor .ink-image-ready img');
   ok('截图粘贴落盘到文档目录并显示');
   // v0.7: exporting PDF reuses the offline HTML pipeline and writes real PDF bytes.
@@ -176,7 +203,7 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   await edit('# 多图\n\n段落\n');await page.locator('#source-toggle').click();await page.locator('#editor > *').first().click();
   await pasteImages([{b64:png.toString('base64')},{b64:png.toString('base64')}]);
   await page.waitForFunction(()=>(window.inkstone.getMarkdown().match(/!\[粘贴图片\]\(粘贴图片-\d{8}-\d{6}(-\d+)?\.png\)/g)||[]).length===2);
-  const shots=(await fs.readdir(fixtures)).filter((n)=>/^粘贴图片-\d{8}-\d{6}(-\d+)?\.png$/.test(n));
+  const shots=(await fs.readdir(dirB)).filter((n)=>/^粘贴图片-\d{8}-\d{6}(-\d+)?\.png$/.test(n));
   assert.equal(shots.length,3,'two more images written beside the document');
   await page.locator('#status').click();
   await page.waitForSelector('#editor .ink-image-ready img');
@@ -212,7 +239,7 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   await page.evaluate(()=>document.getElementById('editor').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})));
   await pasteImages([{b64:png.toString('base64')}]);
   await delay(400);
-  assert.equal((await fs.readdir(fixtures)).filter((n)=>/^粘贴图片-/.test(n)).length,3,'paste during composition writes nothing');
+  assert.equal((await fs.readdir(dirB)).filter((n)=>/^粘贴图片-/.test(n)).length,3,'paste during composition writes nothing');
   await assertMD('# 组合\n\n段落\n');
   await page.evaluate(()=>document.getElementById('editor').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));
   await delay(50);
@@ -320,6 +347,17 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   await page.locator('#folder-filter').fill('笔记二');await delay(100);
   assert.equal(await page.locator('#folder-tree .folder-doc').count(),1);
   await page.locator('#folder-filter').fill('');ok('会话恢复：上次文档与文件夹视图自动还原，支持按名过滤');
+  // AI 入口回归：面板、设置对话框与文件夹页签曾因 .app 挂载点缺失而整体失效。
+  assert.equal(await page.locator('#ai-panel').count(),1,'AI 面板已挂载');
+  assert.equal(await page.locator('#ai-settings-dialog').count(),1,'AI 服务设置对话框已挂载');
+  assert.equal(await page.locator('#search-panel').count(),1,'搜索面板已挂载');
+  assert.ok(await page.locator('#folder-panel').isVisible(),'文件夹页签绑定未被初始化异常中断');
+  await cmd('aiPanel');assert.ok(await page.locator('#ai-panel').isVisible(),'AI 菜单可打开面板');
+  await page.locator('#ai-panel .ai-panel-close').click();assert.ok(!(await page.locator('#ai-panel').isVisible()),'AI 面板可关闭');
+  await cmd('aiSettings');assert.ok(await page.locator('#ai-settings-dialog').isVisible(),'AI 服务设置可打开');
+  await page.locator('#ai-settings-dialog button[type="submit"]').click();assert.ok(!(await page.locator('#ai-settings-dialog').isVisible()),'AI 服务设置可关闭');
+  await cmd('aiPanel');await cmd('aiPanel');assert.ok(!(await page.locator('#ai-panel').isVisible()),'AI 面板可再次切换');
+  await page.locator('#panel-outline').click();ok('AI 面板、服务设置与文件夹页签均可正常使用');
   await edit('关闭前先改一笔，让关闭确认弹窗出现');
   await queue('message',2);await cmd('close');assert.equal(await page.locator('#source-toggle').count(),1);ok('关闭窗口选择取消可继续编辑');
   await edit(complex);if(await page.locator('#source').isVisible())await page.locator('#source-toggle').click();await page.locator('#status').click();await page.waitForTimeout(2600);await page.screenshot({path:path.join(OUT,'墨页-Windows桌面预览.png')});
@@ -328,5 +366,5 @@ function noisePng(width,height){const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w
   const result={passed:cases.length,cases,errors,platform:process.platform,note:'Electron Linux runtime integration test; Windows x64 artifacts are cross-built. Native Windows IME and installer smoke tests remain.'};
   await fs.writeFile(path.join(OUT,'desktop-e2e.json'),JSON.stringify(result,null,2));console.log('ALL PASS',cases.length);
  }catch(error){await fs.writeFile(path.join(OUT,'desktop-e2e-failure.txt'),String(error.stack));if(page&&!page.isClosed())await page.screenshot({path:path.join(OUT,'failure.png')});throw error;}
- finally{if(app)try{app.process().kill('SIGKILL');}catch{}releaseServer.close();}
+ finally{if(app){try{const proc=app.process();if(process.platform==='win32')require('node:child_process').execFileSync('taskkill',['/PID',String(proc.pid),'/T','/F'],{stdio:'ignore'});else proc.kill('SIGKILL');}catch{}}releaseServer.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

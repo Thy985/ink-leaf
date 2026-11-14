@@ -47,6 +47,8 @@ async function writeProviderConfig(config) {
   await fsp.rename(tmp, providerStorePath());
 }
 
+const DEFAULT_TIMEOUT_MS = 120000;
+
 async function callProvider(messages, options = {}) {
   const config = await readProviderConfig();
   if (!config.apiKey) throw new Error('尚未配置 AI 服务 API Key');
@@ -60,10 +62,21 @@ async function callProvider(messages, options = {}) {
     stream: false,
   });
 
+  const timeoutMs = typeof options.timeoutMs === 'number' && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
+
   return new Promise((resolve, reject) => {
     const url = new URL(`${config.baseUrl}/chat/completions`);
     const isHttps = url.protocol === 'https:';
     const httpModule = isHttps ? https : http;
+
+    let settled = false;
+    let timer = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      fn(value);
+    };
 
     const request = httpModule.request(url.toString(), {
       method: 'POST',
@@ -80,25 +93,30 @@ async function callProvider(messages, options = {}) {
           const parsed = JSON.parse(responseData);
           if (parsed.error) {
             const message = parsed.error.message || 'AI 服务返回错误';
-            if (response.statusCode === 401) reject(new Error('API Key 无效或已过期'));
-            else if (response.statusCode === 429) reject(new Error('AI 服务请求过于频繁，请稍后重试'));
-            else if (response.statusCode >= 500) reject(new Error('AI 服务暂时不可用，请稍后重试'));
-            else reject(new Error(message));
+            if (response.statusCode === 401) finish(reject, new Error('API Key 无效或已过期'));
+            else if (response.statusCode === 429) finish(reject, new Error('AI 服务请求过于频繁，请稍后重试'));
+            else if (response.statusCode >= 500) finish(reject, new Error('AI 服务暂时不可用，请稍后重试'));
+            else finish(reject, new Error(message));
             return;
           }
           const content = parsed.choices?.[0]?.message?.content;
           if (typeof content !== 'string') {
-            reject(new Error('AI 服务返回格式异常'));
+            finish(reject, new Error('AI 服务返回格式异常'));
             return;
           }
-          resolve(content);
+          finish(resolve, content);
         } catch {
-          reject(new Error('AI 服务返回解析失败'));
+          finish(reject, new Error('AI 服务返回解析失败'));
         }
       });
-      response.on('error', () => reject(new Error('AI 服务响应失败')));
+      response.on('error', (error) => finish(reject, new Error('AI 服务响应失败')));
     });
-    request.on('error', (error) => reject(new Error(`无法连接 AI 服务: ${error.message || '网络错误'}`)));
+    request.on('error', (error) => finish(reject, new Error(`无法连接 AI 服务: ${error.message || '网络错误'}`)));
+    // 没有超时的话，服务端挂起会让面板永远停在「处理中」。
+    timer = setTimeout(() => {
+      request.destroy(new Error('AI 服务响应超时，请稍后重试'));
+      finish(reject, new Error('AI 服务响应超时，请稍后重试'));
+    }, timeoutMs);
     request.write(body);
     request.end();
   });
@@ -204,10 +222,12 @@ const ACTIONS = {
 // Document Operation Layer
 // ---------------------------------------------------------------------------
 
-function createProposal(action, originalText, suggestedText, context = '') {
+function createProposal(action, originalText, suggestedText, context = '', actionKey = '') {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     action,
+    // 触发本次提案的操作 key（如 rewrite），供「重新生成」复用原操作。
+    actionKey,
     originalText,
     suggestedText,
     context: context.slice(0, 500),
@@ -245,12 +265,14 @@ async function runSelectionAction(actionKey, selection, document) {
   if (!selection || !selection.trim()) throw new Error('请先选中一段文字');
 
   const context = buildSelectionContext(selection, document);
+  // 提示词里同样用截断后的选区，避免超长选区打爆模型上下文。
+  const bounded = truncateText(selection, CONTEXT_LIMITS.selection);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: action.prompt(selection) },
+    { role: 'user', content: action.prompt(bounded) },
   ];
   const result = await callProvider(messages, { temperature: 0.4 });
-  return createProposal(action.label, selection, result.trim(), context.notice);
+  return createProposal(action.label, selection, result.trim(), context.notice, action.key);
 }
 
 async function askDocument(question, document) {
@@ -295,6 +317,15 @@ async function reviewDocument(instruction, document) {
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const MAX_OUTLINE_DEPTH = 6;
 const MAX_OUTLINE_ITEMS = 200;
+// CJK 统一表意文字、日文假名、韩文音节：这些文字不以空格分词。
+const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/g;
+
+// 中文按字计数、西文按词计数：直接 split(/\s+/) 会把整段中文算成 1 个词。
+function countWords(line) {
+  const cjk = (line.match(CJK_CHAR_RE) || []).length;
+  const western = line.replace(CJK_CHAR_RE, ' ').split(/\s+/).filter(Boolean).length;
+  return cjk + western;
+}
 
 function analyzeDocument(document) {
   const text = document?.text || '';
@@ -323,8 +354,7 @@ function analyzeDocument(document) {
 
     if (line.trim() && !line.trim().startsWith('#')) {
       paragraphCount++;
-      const words = line.trim().split(/\s+/);
-      wordCount += words.length;
+      wordCount += countWords(line);
       charCount += line.length;
     }
   }
@@ -391,6 +421,7 @@ async function clearProviderConfig() {
 
 module.exports = {
   runSelectionAction,
+  callProvider,
   askDocument,
   askMultiDocument,
   reviewDocument,

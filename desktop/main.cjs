@@ -1,10 +1,11 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, session, net } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = fs.promises;
 const crypto = require('node:crypto');
+const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const files = require('./files.cjs');
 const folders = require('./folders.cjs');
@@ -29,6 +30,9 @@ let recoveryWritable = false;
 let state = { text: '', filename: '未命名.md', dirty: false, savedText: '', composing: false, filepath: null };
 let opened = null; // { filepath, fingerprint, eol, bom }
 let sessionState = null; // { version, folders: [{ path, lastDoc, addedAt }], activeFolder, lastDoc }
+// 更新下载状态：只在主进程内维护，渲染层拿到的是绝对路径的校验结果。
+let updateFilePath = null;
+let updateDownloading = false;
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 function commandLinePath(commandLine) {
@@ -285,7 +289,11 @@ async function perform(action, rawSnapshot = state, params = null) {
     try { exists = await fsp.stat(updated); } catch (error) { if (error.code !== 'ENOENT') throw new Error(`重命名失败：${error.message}`); }
     if (exists && (process.platform !== 'win32' || target.toLowerCase() !== updated.toLowerCase())) throw new Error('同名文件已存在');
     try { await fsp.rename(target, updated); } catch (error) { throw new Error(`重命名失败：${error.message}`); }
-    const renamedOpenDocument = opened?.filepath === target;
+    // opened.filepath 可能来自 folderCreate 或旧会话，未必是 realpath 规范形式
+    // （Windows 上 D:\Temp 与 D:\temp 不相等）。两边都规范化后再判断，否则重命名后
+    // opened 仍指向旧文件名，保存会把内容写回已经不存在的路径。
+    const openedPath = opened?.filepath ? await fsp.realpath(opened.filepath).catch(() => opened.filepath) : null;
+    const renamedOpenDocument = openedPath === target;
     if (renamedOpenDocument) {
       opened = { ...opened, filepath: updated };
       state = { ...state, filepath: updated, filename: path.basename(updated) };
@@ -303,7 +311,10 @@ async function perform(action, rawSnapshot = state, params = null) {
     try { exists = await fsp.stat(target); } catch (error) { if (error.code !== 'ENOENT') throw new Error(`创建失败：${error.message}`); }
     if (exists) throw new Error('同名文件已存在');
     await files.writeDocumentAtomic(target, '', { eol: 'lf', bom: false });
-    return openCandidate(target, snapshot);
+    // 用 realpath 后的规范路径打开，让 opened.filepath 与 folderRename 解析出的
+    // 目标保持同一种形式（Windows 上 folderPath 的大小写可能不规范）。
+    const canonical = await fsp.realpath(target).catch(() => target);
+    return openCandidate(canonical, snapshot);
   }
   if (action === 'folderRemove') {
     if (!sessionState) sessionState = await readSession();
@@ -333,6 +344,22 @@ async function scanRegistered(folderPath) {
   return { folder: folderPath, ...scan };
 }
 function sendCommand(action, payload) { if (win && !win.isDestroyed() && win.webContents) win.webContents.send('desktop:command', { action, payload }); }
+// 退出应用后静默运行 NSIS 安装器：安装器检测到应用仍在运行会中止安装，
+// 所以让 PowerShell 等本进程退出，再拉起因而不需要用户手动点安装包。
+function launchInstaller(installerPath) {
+  const command = updates.buildInstallerCommand({ installerPath, pid: process.pid });
+  const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], { detached: true, stdio: 'ignore' });
+  ps.on('error', () => {
+    const fallback = spawn(installerPath, ['/S'], { detached: true, stdio: 'ignore' });
+    fallback.on('error', () => {});
+    fallback.unref();
+  });
+  ps.unref();
+  // 立即拆掉窗口：window-all-closed 会退出应用，安装器等到进程结束后再运行。
+  closing = true;
+  if (closeFallbackTimer) { clearTimeout(closeFallbackTimer); closeFallbackTimer = null; }
+  if (win && !win.isDestroyed()) win.destroy();
+}
 function menuTemplate() {
   const item = (label, action, accelerator) => ({ label, ...(accelerator ? { accelerator } : {}), click: () => action === 'fullscreen' ? win.setFullScreen(!win.isFullScreen()) : sendCommand(action) });
   const recentSubmenu = (sessionState?.recentDocs || []).map((doc) => ({
@@ -344,21 +371,17 @@ function menuTemplate() {
     { label: '文件', submenu: [item('新建', 'new', 'CommandOrControl+N'), item('打开', 'open', 'CommandOrControl+O'), recentItem, item('打开文件夹…', 'folderAdd'), item('保存', 'save', 'CommandOrControl+S'), item('另存为', 'saveAs', 'CommandOrControl+Shift+S'), { type: 'separator' }, item('搜索文件夹…', 'search', 'CommandOrControl+Shift+F'), { type: 'separator' }, item('导出 HTML', 'exportHtml'), item('导出 PDF', 'exportPdf'), { type: 'separator' }, item('关闭', 'close')] },
     { label: '编辑', submenu: [item('撤销', 'undo', 'CommandOrControl+Z'), item('重做', 'redo', 'CommandOrControl+Y'), item('重做（备用）', 'redo', 'CommandOrControl+Shift+Z'), { type: 'separator' }, {role:'cut',label:'剪切'}, {role:'copy',label:'复制'}, {role:'paste',label:'粘贴'}, {role:'selectAll',label:'全选'}, { type: 'separator' }, item('粗体', 'bold', 'CommandOrControl+B'), item('斜体', 'italic', 'CommandOrControl+I'), item('链接', 'link', 'CommandOrControl+K'), item('查找', 'find', 'CommandOrControl+F'), item('替换', 'replace', 'CommandOrControl+H')] },
     { label: '视图', submenu: [item('源文', 'source', 'CommandOrControl+/'), item('专注', 'focus', 'F8'), item('主题', 'theme'), item('大纲', 'outline'), item('全屏', 'fullscreen', 'F11')] },
-    { label: 'AI', submenu: [item('AI 助手面板', 'aiPanel', 'CommandOrControl+Space'), { type: 'separator' }, item('改写选中', 'aiRewrite'), item('精简选中', 'aiCondense'), item('扩写选中', 'aiExpand'), item('解释选中', 'aiExplain'), item('检查逻辑', 'aiLogic'), { type: 'separator' }, item('AI 服务设置…', 'aiSettings')] },
-    { label: '帮助', submenu: [item('使用说明', 'help'), { type: 'separator' }, { label: '检查更新', id: 'check-updates', click: () => { updates.checkUpdates({ net, app, dialog, shell, win }).catch(() => {}); } }] }
+    { label: 'AI', submenu: [item('AI 助手面板', 'aiPanel', 'CommandOrControl+Shift+Space'), { type: 'separator' }, item('改写选中', 'aiRewrite'), item('精简选中', 'aiCondense'), item('扩写选中', 'aiExpand'), item('解释选中', 'aiExplain'), item('检查逻辑', 'aiLogic'), { type: 'separator' }, item('AI 服务设置…', 'aiSettings')] },
+    { label: '帮助', submenu: [item('使用说明', 'help'), { type: 'separator' }, { label: '检查更新', id: 'check-updates', click: () => sendCommand('checkUpdates') }] }
   ];
 }
 function createWindow() {
   win = new BrowserWindow({ width: 1200, height: 820, minWidth: 760, minHeight: 520, show: false, backgroundColor: '#f6f5f1', title: '墨页', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.once('ready-to-show', () => win.show());
-  // Allow HTTP connections for local AI services
-  win.webContents.session.setCertificateVerifyProc((request, callback) => {
-    callback(0); // Continue
-  });
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
-  // Allow network requests for AI service (main process net.request is not affected by this)
+  // Renderer permissions: clipboard-read is needed for paste; everything else denied.
   win.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
     // Allow clipboard-read for paste operations, deny others
     if (permission === 'clipboard-read') callback(true);
@@ -514,6 +537,59 @@ app.whenReady().then(async () => {
       return { ok: true, results, totalMatches: results.reduce((sum, r) => sum + r.totalMatches, 0) };
     } catch (error) {
       return { ok: false, message: error.message || '搜索失败' };
+    }
+  });
+  // 更新服务：渲染层只触发检查 / 下载 / 安装；地址、落盘路径与校验都在主进程内决定。
+  ipcMain.handle('update:check', async (event) => {
+    if (!isTrusted(event)) return { status: 'failed', message: '不受信任的更新请求' };
+    return updates.checkForUpdates({ net, app, endpoint: process.env.INKSTONE_UPDATE_API });
+  });
+  ipcMain.handle('update:download', async (event, asset) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的更新请求' };
+    try {
+      if (!asset || typeof asset.name !== 'string' || !asset.name.trim() || !updates.isAllowedAssetUrl(asset.url)) throw new Error('无效的安装包信息');
+      if (updateDownloading) return { ok: false, message: '已有下载任务在进行中' };
+      updateDownloading = true;
+      const dir = path.join(app.getPath('temp'), 'inkstone-update');
+      // 清掉上一次下载，避免同名安装包被复用。
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+      const targetPath = path.join(dir, path.basename(asset.name).replace(/[^\w.\-]+/g, '_'));
+      const result = await updates.downloadAsset({
+        fetchImpl: (url, options) => net.fetch(url, options),
+        asset,
+        targetPath,
+        onProgress: ({ received, total }) => { if (win && !win.isDestroyed()) win.webContents.send('update:progress', { received, total }); },
+      });
+      const digest = await updates.verifyDigest(targetPath, asset.digest);
+      if (!digest.verified) await fsp.unlink(targetPath).catch(() => {});
+      updateFilePath = targetPath;
+      return { ok: true, filePath: targetPath, bytes: result.bytes, total: result.total, verified: digest.verified };
+    } catch (error) {
+      updateFilePath = null;
+      return { ok: false, message: error.message || '下载失败' };
+    } finally {
+      updateDownloading = false;
+    }
+  });
+  ipcMain.handle('update:install', async (event, filePath) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的更新请求' };
+    try {
+      if (!filePath || path.resolve(filePath) !== path.resolve(updateFilePath || '')) throw new Error('安装包不存在，请重新下载');
+      if (process.platform !== 'win32') return { ok: false, message: '当前平台不支持自动安装，请手动运行安装包' };
+      launchInstaller(filePath);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error.message || '安装失败' };
+    }
+  });
+  ipcMain.handle('update:reveal', async (event, filePath) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的更新请求' };
+    try {
+      if (!filePath || path.resolve(filePath) !== path.resolve(updateFilePath || '')) throw new Error('安装包不存在');
+      shell.showItemInFolder(filePath);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error.message || '无法定位安装包' };
     }
   });
   // 文档分析：结构大纲与统计（纯本地，不调用远程模型）

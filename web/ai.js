@@ -7,6 +7,8 @@ let aiBusy = false;
 let aiActions = [];
 let aiConversation = [];
 let aiSelectionToolbar = null;
+// 发起 AI 操作时记录的选区信息，用于接受提案时定位原文。
+const aiProposalSelections = new Map();
 
 const AI_ACTION_LABELS = {
   rewrite: '改写',
@@ -25,10 +27,15 @@ export async function initAI() {
   } catch {
     aiActions = Object.entries(AI_ACTION_LABELS).map(([key, label]) => ({ key, label }));
   }
-  createAIPanel();
-  createSelectionToolbar();
-  createProviderSettingsDialog();
-  updateAIUI();
+  // 面板创建失败不能影响编辑器主流程：AI 只是可选能力。
+  try {
+    createAIPanel();
+    createSelectionToolbar();
+    createProviderSettingsDialog();
+    updateAIUI();
+  } catch (error) {
+    console.error('AI 面板初始化失败', error);
+  }
 }
 
 export function isAIAvailable() {
@@ -78,7 +85,7 @@ function createAIPanel() {
         </div>
       </div>
     </div>`;
-  document.querySelector('.app').appendChild(panel);
+  document.body.appendChild(panel);
 
   panel.querySelector('.ai-panel-close').onclick = () => toggleAIPanel(false);
   panel.querySelector('[data-tab="chat"]').onclick = () => switchAITab('chat');
@@ -201,24 +208,50 @@ function hideSelectionToolbar() {
   if (aiSelectionToolbar) aiSelectionToolbar.hidden = true;
 }
 
-async function runAISelection(action, selection) {
+async function runAISelection(action, selection, existingOffsets) {
   if (aiBusy) return;
   if (!aiProviderConfigured) {
     toast('请先在「AI → AI 服务设置」中配置 AI 服务');
     return;
   }
+  // 记录发起操作时的选区偏移；接受提案时用它定位原文，不再依赖已被面板清空的实时选区。
+  const offsets = normalizeOffsets(existingOffsets || window.inkstoneGetSelection?.());
   aiBusy = true;
   hideSelectionToolbar();
   try {
     const document = { text: getText(), filename: getFilename() };
     const result = await window.desktop.ai.selection(action, selection, document);
     if (!result.ok) throw new Error(result.message || 'AI 操作失败');
+    aiProposalSelections.set(result.proposal.id, offsets);
     showAIProposal(result.proposal);
   } catch (error) {
     toast(friendlyError(error, 'AI 操作失败'));
   } finally {
     aiBusy = false;
   }
+}
+
+function normalizeOffsets(offsets) {
+  if (!offsets) return null;
+  const start = typeof offsets.start === 'number' ? offsets.start : offsets.a;
+  const end = typeof offsets.end === 'number' ? offsets.end : offsets.f;
+  if (typeof start !== 'number' || typeof end !== 'number') return null;
+  return { start: Math.min(start, end), end: Math.max(start, end) };
+}
+
+// 接受时重新定位原文：优先用保存的偏移（容忍选中前后的空白），文档变化后按原文回查，
+// 仍然找不到就明确报错，而不是把建议写进错误的位置。
+function resolveProposalRange(proposal) {
+  const value = getText();
+  const saved = aiProposalSelections.get(proposal.id);
+  if (saved) {
+    const raw = value.slice(saved.start, saved.end);
+    const leading = raw.length - raw.trimStart().length;
+    const trimmed = raw.trim();
+    if (trimmed === proposal.originalText) return { start: saved.start + leading, end: saved.start + leading + trimmed.length };
+  }
+  const at = value.indexOf(proposal.originalText);
+  return at >= 0 ? { start: at, end: at + proposal.originalText.length } : null;
 }
 
 function showAIProposal(proposal) {
@@ -239,31 +272,38 @@ function showAIProposal(proposal) {
     <div class="ai-proposal-actions">
       <button type="button" class="ai-accept" data-id="${proposal.id}">接受</button>
       <button type="button" class="ai-reject" data-id="${proposal.id}">拒绝</button>
-      <button type="button" class="ai-regenerate" data-action="${proposal.action}">重新生成</button>
+      <button type="button" class="ai-regenerate" data-action="${proposal.actionKey || proposal.action}">重新生成</button>
     </div>`;
   container.appendChild(card);
   container.scrollTop = container.scrollHeight;
 
   card.querySelector('.ai-accept').onclick = () => acceptAIProposal(proposal);
   card.querySelector('.ai-reject').onclick = () => rejectAIProposal(proposal.id);
-  card.querySelector('.ai-regenerate').onclick = () => runAISelection(proposal.actionKey || 'rewrite', proposal.originalText);
+  card.querySelector('.ai-regenerate').onclick = () => runAISelection(proposal.actionKey || 'rewrite', proposal.originalText, aiProposalSelections.get(proposal.id));
 }
 
-async function acceptAIProposal(proposal) {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) {
-    toast('未找到可替换的选区');
+function acceptAIProposal(proposal) {
+  if (!window.inkstoneReplaceRange) {
+    toast('当前环境不支持写入文档');
     return;
   }
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-  range.insertNode(document.createTextNode(proposal.suggestedText));
-  selection.removeAllRanges();
-  window.inkstoneUpdateUI?.();
-  window.inkstoneToast?.('已接受 AI 修改');
+  const range = resolveProposalRange(proposal);
+  if (!range) {
+    toast('文档已变化，无法定位原选区，请重新选中后再试');
+    return;
+  }
+  try {
+    // 走模型层替换：同步更新大纲、字数、撤销栈与预览，而不是直接改 DOM。
+    window.inkstoneReplaceRange(range.start, range.end, proposal.suggestedText);
+    aiProposalSelections.delete(proposal.id);
+    window.inkstoneToast?.('已接受 AI 修改');
+  } catch (error) {
+    toast(friendlyError(error, '应用 AI 修改失败'));
+  }
 }
 
 function rejectAIProposal(id) {
+  aiProposalSelections.delete(id);
   const card = document.querySelector(`.ai-proposal-card .ai-reject[data-id="${id}"]`)?.closest('.ai-proposal-card');
   if (card) card.remove();
   toast('已拒绝 AI 修改');

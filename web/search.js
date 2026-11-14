@@ -8,7 +8,8 @@ let searchOptions = { caseSensitive: false, regex: false };
 
 export function initSearch() {
   if (!window.desktop?.search) return;
-  createSearchPanel();
+  // 搜索面板创建失败不能影响编辑器主流程。
+  try { createSearchPanel(); } catch (error) { console.error('搜索面板初始化失败', error); }
 }
 
 export function isSearchAvailable() {
@@ -35,7 +36,7 @@ function createSearchPanel() {
     </div>
     <div class="search-panel-results" id="search-results"></div>
     <div class="search-panel-status" id="search-status"></div>`;
-  document.querySelector('.app').appendChild(panel);
+  document.body.appendChild(panel);
 
   panel.querySelector('.search-panel-close').onclick = () => toggleSearchPanel(false);
   const input = panel.querySelector('#search-input');
@@ -86,7 +87,7 @@ function renderSearchResults(result) {
   const container = document.getElementById('search-results');
   const status = document.getElementById('search-status');
   if (result.results.length === 0) {
-    status.textContent = `未找到包含「${result.query}」的文档`;
+    status.textContent = `未找到包含「${searchQuery}」的文档`;
     container.innerHTML = '';
     return;
   }

@@ -42,6 +42,17 @@ test('AI: createProposal generates a valid proposal structure', () => {
   assert.ok(proposal.createdAt);
 });
 
+test('AI: createProposal keeps the action key for regeneration', () => {
+  const proposal = ai.createProposal('改写', '原文', '建议', '上下文', 'rewrite');
+  assert.strictEqual(proposal.action, '改写');
+  assert.strictEqual(proposal.actionKey, 'rewrite');
+});
+
+test('AI: createProposal action key defaults to empty string', () => {
+  const proposal = ai.createProposal('改写', '原文', '建议', '上下文');
+  assert.strictEqual(proposal.actionKey, '');
+});
+
 test('AI: diffText produces added/removed/unchanged entries', () => {
   const diff = ai.diffText('第一行\n第二行', '第一行\n修改行');
   assert.ok(Array.isArray(diff));
@@ -264,6 +275,47 @@ test('AI: analyzeDocument handles document without headings', () => {
   assert.ok(analysis.stats.paragraphCount >= 1);
 });
 
+test('AI: analyzeDocument counts CJK by characters instead of whitespace tokens', () => {
+  const analysis = ai.analyzeDocument({ text: '中文段落\n\nenglish words here', filename: 'mixed.md' });
+  // 4 个汉字 + 3 个英文词；旧的 split(/\s+/) 只会得到 2。
+  assert.strictEqual(analysis.stats.wordCount, 7);
+});
+
 test('AI: summarizeDocument throws for empty document', async () => {
   await assert.rejects(() => ai.summarizeDocument({ text: '', filename: 'empty.md' }), /没有可分析的文档/);
+});
+
+test('AI: callProvider times out instead of hanging forever', async () => {
+  const http = require('node:http');
+  const server = http.createServer(() => { /* 接受连接但永不响应 */ });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-ai-timeout-'));
+  process.env.INKSTONE_USER_DATA = tmpDir;
+  try {
+    const { port } = server.address();
+    await ai.saveProviderConfig({ baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test', model: 'test-model' });
+    await assert.rejects(
+      () => ai.callProvider([{ role: 'user', content: '你好' }], { timeoutMs: 400 }),
+      /超时/
+    );
+  } finally {
+    delete process.env.INKSTONE_USER_DATA;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('AI: callProvider rejects when no API key is configured', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-ai-nokey-'));
+  process.env.INKSTONE_USER_DATA = tmpDir;
+  try {
+    await assert.rejects(
+      () => ai.callProvider([{ role: 'user', content: '你好' }], { timeoutMs: 1000 }),
+      /API Key/
+    );
+  } finally {
+    delete process.env.INKSTONE_USER_DATA;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });

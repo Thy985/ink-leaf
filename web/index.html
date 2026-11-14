@@ -80,6 +80,9 @@
 </div><div class="dialog-actions"><button class="primary" value="close">关闭</button></div></form></dialog>
 <dialog id="name-dialog"><form method="dialog"><h2 id="name-title">重命名文档</h2><p>名称仅用于下载文件，不会移动本地文件。</p><input id="name-input" aria-label="文档名称" required maxlength="100" autocomplete="off"><div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确定</button></div></form></dialog>
 <dialog id="folder-name-dialog"><form method="dialog"><h2 id="folder-name-title">重命名文档</h2><p id="folder-name-note">在同一文件夹内重命名，扩展名需为 .md / .markdown / .txt，不会移动到其他目录。</p><input id="folder-name-input" aria-label="文件名" required maxlength="120" autocomplete="off"><div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button value="confirm" class="primary">确定</button></div></form></dialog>
+<dialog id="update-dialog"><form method="dialog"><h2 id="update-title">检查更新</h2><p id="update-message">正在查询最新版本…</p>
+<div id="update-progress" hidden><progress id="update-bar" max="100" value="0"></progress><div id="update-progress-text"></div></div>
+<div class="dialog-actions"><button type="button" id="update-reveal" hidden>打开所在文件夹</button><button type="button" id="update-release" hidden>查看发布说明</button><button value="cancel" formnovalidate>取消</button><button value="ok" class="primary" id="update-confirm">好</button></div></form></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
 </body>
