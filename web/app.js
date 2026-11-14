@@ -1553,12 +1553,15 @@ async function startUpdateInstall() {
 function initUpdateUI() {
   const dialog = $('update-dialog');
   if (!dialog || !isUpdateAvailable()) return;
-  dialog.addEventListener('close', () => {
-    const action = dialog.returnValue;
-    dialog.returnValue = '';
+  dialog.addEventListener('close', () => { dialog.returnValue = ''; });
+  // 确认按钮是 type="button"，不会因 method="dialog" 提交而关闭对话框——
+  // 否则点「下载并安装」后对话框立即消失，下载进度与「立即安装」就永远看不到。
+  $('update-confirm').onclick = () => {
+    const action = $('update-confirm').value;
     if (action === 'download') startUpdateDownload();
     else if (action === 'install') startUpdateInstall();
-  });
+    else dialog.close('ok');
+  };
   $('update-reveal').onclick = async () => {
     if (!updateState.filePath) return;
     try { await desktop.update.reveal(updateState.filePath); }

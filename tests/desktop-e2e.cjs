@@ -35,7 +35,8 @@ const releaseServer=http.createServer((req,res)=>{
  const releaseBase=await new Promise(r=>releaseServer.listen(0,'127.0.0.1',()=>r(`http://127.0.0.1:${releaseServer.address().port}`)));
  let app,page; const errors=[];
  async function launch(){
-  app=await electron.launch({args:['--no-sandbox',ROOT],env:{...process.env,INKSTONE_USER_DATA:user},timeout:30000});
+ // 独立 Chromium 目录：单实例锁按它计算，本机装了墨页时测试进程才不会被直接顶掉。
+ app=await electron.launch({args:['--no-sandbox',ROOT,`--user-data-dir=${path.join(temp,'chromium')}`],env:{...process.env,INKSTONE_USER_DATA:user},timeout:30000});
   page=await app.firstWindow(); page.on('pageerror',e=>errors.push(String(e)));
   await page.waitForFunction(()=>Boolean(window.desktop && window.inkstone));
   await page.waitForTimeout(350);
@@ -79,9 +80,12 @@ const releaseServer=http.createServer((req,res)=>{
   assert.equal(newer.open,true);assert.equal(newer.title,'发现新版本');assert(newer.message.includes('99.0.0'),newer.message);
   assert.equal(newer.value,'download');assert.equal(newer.text,'下载并安装');assert.equal(newer.revealHidden,true);
   await page.locator('#update-confirm').click();
+ // 点击「下载并安装」后对话框必须保持打开：method="dialog" 的提交按钮会顺带关闭对话框，
+ // 一旦关闭，下载进度与「立即安装」就再也看不到（用户表现为“点了没反应”）。
+ assert.equal((await updateDialog()).open,true);
   await page.waitForFunction(()=>document.getElementById('update-confirm').value==='install');
   const downloaded=await updateDialog();
-  assert.equal(downloaded.progressHidden,true);assert.equal(downloaded.text,'立即安装');assert.equal(downloaded.revealHidden,false);
+  assert.equal(downloaded.open,true);assert.equal(downloaded.progressHidden,true);assert.equal(downloaded.text,'立即安装');assert.equal(downloaded.revealHidden,false);
   const setupPath=path.join(os.tmpdir(),'inkstone-update',setupName);
   assert.equal((await waitFile(setupPath,10000)).size,setupBytes.length);
   assert.equal(crypto.createHash('sha256').update(await fs.readFile(setupPath)).digest('hex'),setupDigest.slice(7));
