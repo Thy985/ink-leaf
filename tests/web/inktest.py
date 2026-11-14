@@ -90,13 +90,29 @@ def markdown_contains(page, needle, timeout=30000, interval=0.05):
 
 
 def load(page, raw, name="测试.md", mime="text/markdown"):
-    """Import ``raw`` through the native file input and wait for the mirror.
+    """Import ``raw`` through the native file input and wait until the open has run.
 
-    Replacement for the old per-test ``load`` helper that paired
-    ``set_input_files`` with a string ``wait_for_function`` on
-    ``window.inkstone.getMarkdown()``.
+    ``markdown_settled`` alone is not enough: when the document already holds the
+    same text, the mirror matches *before* the asynchronous open handler has run,
+    so the helper can return while the app is still reading the file.  The late
+    ``已打开`` toast then overwrites whatever toast the caller just asserted on —
+    flaky on a loaded CI runner.  Clear the toast first and wait for the open to
+    report itself, so callers always return after the open has been applied.
     """
+    target = raw.replace("\r\n", "\n").replace("\r", "\n")
+    marker = target.replace("\n", "\u0001")
+    page.evaluate("() => { document.getElementById('toast').textContent = ''; }")
     page.locator("#file-input").set_input_files(
         {"name": name, "mimeType": mime, "buffer": raw.encode("utf-8")}
     )
-    markdown_settled(page, raw.replace("\r\n", "\n").replace("\r", "\n"))
+    state = {}
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        state = page.evaluate(
+            "() => ({ md: document.body.dataset.inkMd || '',"
+            " toast: document.getElementById('toast').textContent })"
+        )
+        if state["md"] == marker and state["toast"].startswith("已打开"):
+            return True
+        time.sleep(0.05)
+    raise TimeoutError(f"打开文件后文档未就绪：md={state.get('md')!r} toast={state.get('toast')!r}")
