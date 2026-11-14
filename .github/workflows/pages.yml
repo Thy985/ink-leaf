@@ -41,6 +41,8 @@ jobs:
           else
             branch="${GITHUB_REF_NAME}"
           fi
+          # 项目尚未创建时先建一个（已存在会报错，忽略即可），并把生产分支固定为 main。
+          npx --yes wrangler@4.162.0 pages project create ink-leaf --production-branch main || true
           npx --yes wrangler@4.162.0 pages deploy dist/site \
             --project-name ink-leaf \
             --branch "$branch"
