@@ -108,7 +108,7 @@ python3 tests/web/v09_test.py
 - `.github/workflows/ci.yml`：推送到 `main` 或对其发起 PR 时，在 ubuntu 上跑 `check` / `npm test` / `build:web`，在 windows 上跑桌面端 Electron 回归（`npm run test:desktop`，结果归档到 `test-results/`），并验证 Linux 打包。
 - `.github/workflows/web.yml`：在 ubuntu 上用 Python Playwright + Chromium 跑 `tests/web/` 下的全部网页回归；本地 `http.server` 已预先起好，自带服务器的用例会探测到并复用。
 - `.github/workflows/pages.yml`：把 `npm run build:site` 产出的 `dist/site/` 用 `wrangler pages deploy` 直传到 Cloudflare Pages 项目 `ink-leaf`。推送到 `main` 为生产部署，推送到其他分支或同仓库 PR 为预览部署；fork 来的 PR 和标签推送会跳过。
-- `.github/workflows/release.yml`：推送 `v*` 标签时在 windows 上执行 `npm run build:win`，把 `dist/*-Setup.exe` 与 `dist/*.zip` 作为资产发布到 GitHub Release，并在发布说明里列出提交与 SHA-256 校验表。
+- `.github/workflows/release.yml`：推送 `v*` 标签时在 windows 上执行 `npm run build:win`，把 `dist/*-Setup.exe` 与 `dist/*.zip` 作为资产发布到 GitHub Release，并在发布说明里列出网页版地址、提交与 SHA-256 校验表。
 
 发布前需要在 GitHub 仓库设置里允许工作流写权限：Settings → Actions → General → Workflow permissions 选择 **Read and write permissions**，否则 `release.yml` 无法创建 Release（工作流文件里已声明 `contents: write`，但仓库级开关优先）。标签建议与 `package.json` 的 `version` 对应，例如 `version` 为 `0.13.0` 时打 `v0.13.0`，这样应用内「帮助 → 检查更新」才能正确比对版本号。
 

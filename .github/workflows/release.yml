@@ -31,6 +31,7 @@ jobs:
           {
             echo "墨页 ${GITHUB_REF_NAME} 已发布。"
             echo
+            echo "网页版：https://ink-leaf.pages.dev/ （无需安装，打开即用）"
             echo "Windows 用户下载 \`Inkstone-*-Windows-x64-Setup.exe\` 运行安装，或使用 zip 免安装版解压即用。"
             echo "桌面版也可以在「帮助 → 检查更新」中直接检测并安装此版本。"
             echo
