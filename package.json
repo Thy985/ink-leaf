@@ -11,7 +11,7 @@
     "build:site": "npm run build:web && node scripts/build-site.mjs",
     "start": "npm run build:web && electron .",
     "start:web": "npm run build:web && python3 -m http.server 4173 --bind 127.0.0.1 --directory web",
-    "test": "node --test web/model.test.js tests/*.test.cjs",
+    "test": "node --test --test-concurrency=1 web/model.test.js tests/*.test.cjs",
     "check": "node --check desktop/main.cjs && node --check desktop/files.cjs && node --check desktop/folders.cjs && node --check desktop/preload.cjs && node --check desktop/update.cjs && node --check desktop/ai.cjs && node --check web/app.js && node --check web/model.js && node --check web/renderer.js && node --check web/ai.js && node --check web/search.js && node --check scripts/build-web.mjs && node --check scripts/build-site.mjs && node --check web/mobile.js && node --check scripts/sync-android.mjs && node --check desktop/ai/provider.mjs && node --check desktop/ai/schema.mjs && node --check desktop/ai/tools.mjs && node --check desktop/ai/harness.mjs",
     "build:win": "npm run build:web && electron-builder --win nsis zip --x64 --publish never",
     "build:linux:test": "npm run build:web && electron-builder --linux dir --x64",
