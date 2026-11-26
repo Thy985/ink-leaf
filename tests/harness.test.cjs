@@ -199,6 +199,50 @@ test('H0: search_folder 的 folder 参数确实生效（限定范围）', async 
   }
 });
 
+test('H0: guard 在真实 SDK 路径上拦住越界文件夹并让本轮继续', async () => {
+  await withTempFolder({ 'inside.md': '命中关键词 alpha\n' }, async (root) => {
+    // 走完整 SDK 路径：让网关请求一个 folder 指向已导入范围之外的调用。
+    await withScriptedServer([
+      toolCallRound('search_folder', { query: 'alpha', folder: path.join(root, '..') }),
+      finalRound(() => '已收到拒绝'),
+    ], async (baseUrl) => {
+      const { tools, harness, provider } = await mods();
+      const { registry } = tools.createTools({ folders: [root] });
+      const result = await harness.runAgent({
+        model: provider.createProvider({ baseUrl, apiKey: 'k' })('mock'),
+        system: '测试',
+        messages: [{ role: 'user', content: '越界' }],
+        registry,
+      });
+      assert.strictEqual(result.trace[0].outcome, 'rejected', '越界文件夹应被 guard 拒绝');
+      assert.match(result.trace[0].reason, /只能检索已在墨页中导入的文件夹/);
+      assert.strictEqual(result.text, '已收到拒绝', '整轮不应被中断');
+    });
+  });
+});
+
+test('H0: SDK 层工具不存在时 trace 记为 error 而不是 ok', async () => {
+  await withTempFolder({ 'a.md': 'alpha\n' }, async (root) => {
+    // 模型调用一个不存在的工具：SDK 会自己拦下并给出 NoSuchToolError，
+    // 不会进 execute，因此 guard 无从记录。trace 不能把它显示成成功。
+    await withScriptedServer([
+      toolCallRound('delete_all', {}),
+      finalRound(() => '已收到错误'),
+    ], async (baseUrl) => {
+      const { tools, harness, provider } = await mods();
+      const { registry } = tools.createTools({ folders: [root] });
+      const result = await harness.runAgent({
+        model: provider.createProvider({ baseUrl, apiKey: 'k' })('mock'),
+        system: '测试',
+        messages: [{ role: 'user', content: '坏工具' }],
+        registry,
+      });
+      assert.strictEqual(result.trace[0].outcome, 'error', '未知工具应记为 error');
+      assert.strictEqual(result.text, '已收到错误', '整轮不应被中断');
+    });
+  });
+});
+
 test('H0: 已导入文件夹的路径比较不因大小写不同而误拒（Windows）', async (t) => {
   if (process.platform !== 'win32') { t.skip('仅 Windows 需要大小写不敏感比较'); return; }
   await withTempFolder({ 'x.md': '关键词 alpha\n' }, async (root) => {

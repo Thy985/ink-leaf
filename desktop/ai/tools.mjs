@@ -41,14 +41,23 @@ function trimContext(text) {
   return flat.length > MAX_CONTEXT_CHARS ? `${flat.slice(0, MAX_CONTEXT_CHARS)}…` : flat;
 }
 
-// 把工具层与文件系统、会话状态解耦：调用方注入已导入文件夹列表。
-// 这样工具层不需要知道 session.json 的存在，也便于测试。
+// 把工具层与文件系统、会话状态解耦：调用方注入已导入文件夹的绝对路径。
+// 注意：session.json 里 folders 的元素是 { path, lastDoc, addedAt } 对象，
+// 调用方需先映射成路径字符串（ai.cjs 的 runAgent 已代为处理）。
+// 这里再过滤一遍：不是绝对路径的条目直接丢弃，避免一个坏数据让整轮工具调用
+// 在深层抛出 TypeError，再被包装成「无法连接 AI 服务」这种误导性提示。
 export function createTools({ folders: roots = [], io } = {}) {
+  const usableRoots = (Array.isArray(roots) ? roots : [])
+    .map((entry) => (entry && typeof entry === 'object' ? entry.path : entry))
+    .filter((entry) => typeof entry === 'string' && path.isAbsolute(entry));
+  roots = usableRoots;
   const registry = {
     search_folder: {
       label: '检索文件夹',
       description: '在用户已导入的文件夹中全文检索关键词，返回命中的文档路径、行号与上下文片段。只能访问已导入文件夹。',
       schema: SEARCH_FOLDER_SCHEMA,
+      // 供 guard 做执行前的范围复核；不对外暴露给模型。
+      roots,
       // 只读工具：不做任何写操作，因此无需额外确认。
       mutates: false,
       async run(args) {
@@ -96,14 +105,24 @@ export function createTools({ folders: roots = [], io } = {}) {
   return { registry, roots };
 }
 
-// 执行前的守卫：工具名白名单 → schema 校验 → 路径复核。
+// 执行前的守卫：工具名白名单 → schema 校验 → 文件夹范围复核。
 // 返回 { ok: true } 或 { ok: false, reason }；拒绝原因会作为工具结果回填给模型，
 // 让它有机会自我纠正，而不是抛异常中断整轮。
+//
+// 实测确认 SDK 不会在调用 execute 前替我们校验工具名与参数（探针：非法参数会原样传到 execute），
+// 所以这里是唯一一道拦得住不可信模型输入的关口，不能只靠 run() 内部自觉。
 export async function guard(toolName, args, registry) {
   if (typeof toolName !== 'string' || !Object.prototype.hasOwnProperty.call(registry, toolName)) {
     return { ok: false, reason: `不在允许列表内的工具：${toolName}` };
   }
   const checked = validate(registry[toolName].schema, args);
   if (!checked.ok) return { ok: false, reason: checked.reason };
+  // 带文件夹参数的工具，在执行前就确认它指向已导入文件夹。
+  // 放在 guard 而不是 run 里，是为了让「越界」与「参数非法」一样得到统一的拒绝轨迹。
+  const spec = registry[toolName];
+  if (checked.value.folder !== undefined && spec.roots) {
+    const scope = resolveRoot(checked.value.folder, spec.roots);
+    if (!scope.ok) return { ok: false, reason: scope.reason };
+  }
   return { ok: true, value: checked.value };
 }

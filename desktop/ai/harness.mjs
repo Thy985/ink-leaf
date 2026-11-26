@@ -30,14 +30,23 @@ function toSdkTools(registry) {
   return tools;
 }
 
-// 根据一步的结果判定 outcome。工具拒绝与执行异常要分开记，
-// 因为前者是安全边界生效（正常），后者是工具本身出了问题（需排查）。
+// 根据一步的结果判定 outcome。三种失败要分开记：
+//   rejected —— guard 主动拒绝（安全边界生效，属正常）
+//   error    —— 工具执行异常，或模型调用了不存在的工具
+// 未知工具这个 case 比较隐蔽：SDK 会直接丢弃该调用，toolResults 里**什么都不留**。
+// 所以判据必须是「有 toolCall 却找不到对应 toolResult」，而不是看 toolResults 里有没有 error。
 function classifyStep(step) {
   const toolResults = step?.toolResults || [];
   const rejected = toolResults.find((result) => result?.output?._toolError);
   if (rejected) return { outcome: 'rejected', reason: rejected.output.reason };
   const failed = toolResults.find((result) => result?.isError || result?.error);
-  if (failed) return { outcome: 'error', reason: '工具执行失败' };
+  if (failed) {
+    return { outcome: 'error', reason: typeof failed.error === 'string' ? failed.error.slice(0, 200) : '工具执行失败' };
+  }
+  const calls = step?.toolCalls || [];
+  if (calls.length > toolResults.length) {
+    return { outcome: 'error', reason: '模型调用了不存在的工具，该调用已被丢弃' };
+  }
   return { outcome: 'ok' };
 }
 
