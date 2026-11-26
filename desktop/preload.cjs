@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
     analyze(document) { return ipcRenderer.invoke('ai:analyze', validAiDocument(document)); },
     summarize(document) { return ipcRenderer.invoke('ai:summarize', validAiDocument(document)); },
     providerStatus() { return ipcRenderer.invoke('ai:provider:status'); },
+    limits() { return ipcRenderer.invoke('ai:limits'); },
     saveProvider(config) { return ipcRenderer.invoke('ai:provider:save', validProviderConfig(config)); },
     clearProvider() { return ipcRenderer.invoke('ai:provider:clear'); },
   }),

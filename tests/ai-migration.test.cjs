@@ -99,9 +99,10 @@ test('H1: 短文档问答整篇发送且不调用工具', async () => {
 // ---------------------------------------------------------------------------
 
 test('H1: 长文档问答改用 search_document 检索而非整篇塞入', async () => {
-  // 构造超过 CONTEXT_LIMITS.document（32000）的文档。
+  // 构造超过 CONTEXT_LIMITS.document（32000）的文档，并埋一个唯一的标记词。
+  const marker = '唯一标记ZZZ';
   const filler = '这是一段用来撑长文档的填充文字。'.repeat(2000);
-  const longText = `${filler}\n\n关键的结论只有一个：本地优先。\n`;
+  const longText = `${filler}\n\n关键的结论只有一个：${marker}。\n`;
   assert.ok(longText.length > 32000, `测试文档必须超过内联阈值，实际 ${longText.length}`);
 
   await withScriptedServer([
@@ -121,11 +122,16 @@ test('H1: 长文档问答改用 search_document 检索而非整篇塞入', async
       assert.strictEqual(result.trace.length, 1, '应当记录一次工具调用');
       assert.strictEqual(result.trace[0].toolName, 'search_document');
       assert.strictEqual(result.trace[0].outcome, 'ok');
-      // 关键：请求体**不应**包含整篇文档，否则等于没迁移。
-      const firstBody = JSON.stringify(requests[0]);
-      assert.ok(!firstBody.includes(filler.slice(0, 200)), '长文档不应整篇进入上下文');
-      // 但工具确实检索到了文档内容（命中片段出现在工具结果里）。
-      assert.ok(JSON.stringify(requests[1]).includes('本地优先'), '工具应检索到关键段落');
+      // 核心保证：发送量必须远小于原文。用比例判定而不是「含不含某段文字」——
+      // 后者会把工具正常返回的检索片段误判成泄漏，是个假阴性断言。
+      const firstRatio = JSON.stringify(requests[0]).length / longText.length;
+      assert.ok(firstRatio < 0.2, `首个请求不应接近原文大小，实际占 ${(firstRatio * 100).toFixed(1)}%`);
+      const worstRatio = Math.max(...requests.map((r) => JSON.stringify(r).length / longText.length));
+      assert.ok(worstRatio < 0.5, `任何一次请求都不应接近原文大小，实际最大占 ${(worstRatio * 100).toFixed(1)}%`);
+
+      // 检索确实拿到了关键内容，且是在检索之后才出现的。
+      assert.ok(JSON.stringify(requests[1]).includes(marker), '工具应检索到标记词所在的段落');
+      assert.ok(!JSON.stringify(requests[0]).includes(marker), '未检索前不应已含文档内容');
     });
   });
 });
@@ -223,6 +229,69 @@ test('H1: parseReviewItems 处理各种包装形态', async () => {
   assert.strictEqual(schema.parseReviewItems(null), null);
   // 条目里没有任何可用字段时应被丢弃
   assert.strictEqual(schema.parseReviewItems('[{"position":"第1段"}]'), null);
+});
+
+test('H1: 说明文字里先出现方括号时仍能找到后面的 JSON', async () => {
+  const { schema } = await mods();
+  // 真实模型常写「[注]」「[1]」「[TOC]」，不能因第一个 [ 不是数组起点就整体放弃。
+  const withBracket = '说明 [注] 如下： [{"original":"a","suggested":"b"}]';
+  const items = schema.parseReviewItems(withBracket);
+  assert.ok(items, `应当解析成功，实际 null：${withBracket}`);
+  assert.strictEqual(items[0].suggested, 'b');
+
+  // Markdown 链接里的方括号同理。
+  const withLink = '参见 [链接](https://x)，建议：[{"original":"a","suggested":"b"}]';
+  assert.ok(schema.parseReviewItems(withLink), '含 Markdown 链接时也应解析成功');
+});
+
+test('H1: 截断不切断 UTF-16 代理对', async () => {
+  const { schema } = await mods();
+  // 每个 emoji 是 2 个码元，截到奇数位会切出孤立高代理。
+  const emoji = '😀'.repeat(5);
+  const cut = schema.truncateText(emoji, 3);
+  assert.strictEqual(cut.length, 2, '应在代理对边界回退一个码元');
+  assert.ok(!/[\uD800-\uDBFF]$/.test(cut), '不应留下孤立高代理');
+  // 未超长时原样返回
+  assert.strictEqual(schema.truncateText('abc', 10), 'abc');
+});
+
+test('H1: 长文档分支在模型不调用工具时如实标注未检索', async () => {
+  // 这是 B1：小模型或兼容网关可能一次工具都不调就直接作答。
+  // 此时答案只是模型推测，必须明确告知，不能当成「基于文档的回答」。
+  const longText = '填充文字。'.repeat(8000);
+  assert.ok(longText.length > 32000);
+
+  await withScriptedServer([
+    // 网关始终直接回答，从不请求工具。
+    () => completion({ role: 'assistant', content: '文档讲了性能、安全和可维护性。' }, 'stop'),
+  ], async (baseUrl) => {
+    await withProviderConfig(baseUrl, async () => {
+      const result = await ai.askDocument('结论是什么？', { text: longText, filename: 'long.md' }, []);
+      assert.deepStrictEqual(result.trace, [], '确实没有调用任何工具');
+      assert.strictEqual(result.retrieved, false, '应标记为未检索');
+      assert.match(result.notice, /未检索文档内容/, '应给出未检索的明确提示');
+      // 答案仍返回，但不是假装读过文档。
+      assert.match(result.answer, /性能/);
+    });
+  });
+});
+
+test('H1: 短文档分支标记为已检索整篇', async () => {
+  await withScriptedServer([
+    () => completion({ role: 'assistant', content: '回答' }, 'stop'),
+  ], async (baseUrl) => {
+    await withProviderConfig(baseUrl, async () => {
+      const result = await ai.askDocument('问', { text: '短文档', filename: 'a.md' }, []);
+      assert.strictEqual(result.retrieved, true, '整篇发送即视为已读到文档');
+      assert.strictEqual(result.notice, undefined, '短文档不应有未检索提示');
+    });
+  });
+});
+
+test('H1: 上下文阈值由主进程提供，前端无需硬编码', async () => {
+  const limits = ai.getContextLimits();
+  assert.strictEqual(typeof limits.document, 'number');
+  assert.strictEqual(limits.document, ai.CONTEXT_LIMITS.document, '下发的阈值必须与实际判定一致');
 });
 
 // ---------------------------------------------------------------------------

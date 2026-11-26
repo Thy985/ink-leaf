@@ -134,9 +134,17 @@ async function callProvider(messages, options = {}) {
 
 const CONTEXT_LIMITS = {
   selection: 8000,
+  // document 同时是「整篇内联还是走检索」的分界点（见 askDocument）。
+  // 前端不硬编码这个值，而是经 ai:limits 通道取，避免两边漂移导致
+  // 「提示说的发送范围」与「实际发送范围」不一致——那等于对用户撒谎。
   document: 32000,
   folder: 64000,
 };
+
+// 供渲染层查询上下文阈值，用于在发送前如实提示本次的发送范围。
+function getContextLimits() {
+  return { ...CONTEXT_LIMITS };
+}
 
 function truncateText(text, limit) {
   if (typeof text !== 'string' || text.length <= limit) return text;
@@ -309,7 +317,8 @@ async function askDocument(question, document, history, options = {}) {
       ...sanitizeHistory(history),
       { role: 'user', content: `文档内容：\n${context.document}\n\n用户问题：${question}\n\n请基于文档内容回答用户问题；如果这是对前文对话的追问，请结合对话历史回答。回答中引用关键段落时，请使用「引用：」前缀标注原文。` },
     ];
-    return { answer: await callProvider(messages, { temperature: 0.2 }), trace: [] };
+    // 短文档整篇随消息发送，模型确实看到了文档内容，故 retrieved 为 true。
+    return { answer: await callProvider(messages, { temperature: 0.2 }), trace: [], retrieved: true };
   }
 
   // 长文档：交给 Agent 用工具检索，而不是把截断后的整篇塞给它。
@@ -324,7 +333,21 @@ async function askDocument(question, document, history, options = {}) {
     ],
     document,
   });
-  return { answer: result.text, trace: result.trace, truncatedByStepLimit: result.truncatedByStepLimit };
+
+  // 模型可能一次工具都不调用就直接作答（小模型或兼容网关常见）。
+  // 此时它并没有读过文档，答案只能来自猜测；必须如实告诉用户，
+  // 不能把一条凭空生成的回答当成「基于文档的回答」呈现。
+  const retrieved = result.trace.some((step) => step.outcome === 'ok');
+  if (!retrieved && result.text.trim()) {
+    return {
+      answer: result.text,
+      trace: result.trace,
+      truncatedByStepLimit: result.truncatedByStepLimit,
+      retrieved: false,
+      notice: '本次回答未检索文档内容，可能是模型自行推测，请谨慎采信。',
+    };
+  }
+  return { answer: result.text, trace: result.trace, truncatedByStepLimit: result.truncatedByStepLimit, retrieved };
 }
 
 async function askMultiDocument(question, documents) {
@@ -497,6 +520,7 @@ module.exports = {
   SYSTEM_PROMPT,
   ACTIONS,
   CONTEXT_LIMITS,
+  getContextLimits,
   // H0 Harness：带工具的一轮问答。工具层只读，且只能访问已导入文件夹。
   // 通过动态 import 加载，保持 ai.cjs 在无 Electron/SDK 环境下仍可被单元测试直接 require。
   runAgent,

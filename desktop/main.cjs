@@ -547,6 +547,8 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('ai:provider:status', async (event) => { if (!isTrusted(event)) return { ok: false }; return ai.getProviderStatus(); });
+  // 上下文阈值由主进程下发，前端不再硬编码，避免提示与实际发送范围漂移。
+  ipcMain.handle('ai:limits', async (event) => { if (!isTrusted(event)) return { ok: false }; return { ok: true, limits: ai.getContextLimits() }; });
   ipcMain.handle('ai:provider:save', async (event, config) => {
     if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
     try { return { ok: true, status: await ai.saveProviderConfig(config || {}) }; }

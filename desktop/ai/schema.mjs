@@ -47,16 +47,20 @@ export function parseReviewItems(raw) {
   };
 
   let parsed = attempt(text);
-  // 前后夹着说明文字时，截出最外层的数组或对象。
+
+  // 前后夹着说明文字时的兜底：从**每一个** [ 或 { 起，截到**最后一个**对应闭合符，
+  // 逐个尝试解析。不能只取第一个 [ ——正文里出现「[注]」「[1]」「[TOC]」
+  // 或 Markdown 链接都极常见，那样会直接放弃掉后面真正的 JSON。
   if (parsed === undefined) {
-    const start = text.indexOf('[');
-    const end = text.lastIndexOf(']');
-    if (start >= 0 && end > start) parsed = attempt(text.slice(start, end + 1));
-  }
-  if (parsed === undefined) {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start >= 0 && end > start) parsed = attempt(text.slice(start, end + 1));
+    for (const [open, close] of [['[', ']'], ['{', '}']]) {
+      let start = text.indexOf(open);
+      while (start >= 0 && parsed === undefined) {
+        const end = text.lastIndexOf(close);
+        if (end > start) parsed = attempt(text.slice(start, end + 1));
+        start = text.indexOf(open, start + 1);
+      }
+      if (parsed !== undefined) break;
+    }
   }
   if (parsed === undefined) return null;
 
@@ -73,7 +77,7 @@ export function parseReviewItems(raw) {
     const item = {};
     for (const key of REVIEW_ITEM_KEYS) {
       const value = entry[key];
-      if (typeof value === 'string' && value.trim()) item[key] = value.trim().slice(0, 2000);
+      if (typeof value === 'string' && value.trim()) item[key] = truncateText(value, 2000);
     }
     // 一条建议至少要能看出改什么，否则展示出来只是噪音。
     if (!item.suggested && !item.original) continue;
@@ -81,6 +85,17 @@ export function parseReviewItems(raw) {
     if (items.length >= 50) break;
   }
   return items.length ? items : null;
+}
+
+// 截断文本，且不切断 UTF-16 代理对。
+// 直接 slice 会在 emoji（😀）、CJK 扩展 B（𠮷）和数学符号中间切断，
+// 留下孤立代理 → 渲染成 U+FFFD，若将来用于写回文档还会造成数据损坏。
+export function truncateText(text, limit) {
+  const value = String(text || '');
+  if (value.length <= limit) return value;
+  let cut = value.slice(0, limit);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return cut;
 }
 
 // 单个 trace 步骤的形状。刻意不含文档正文：trace 会进日志与 UI，正文不应外泄。

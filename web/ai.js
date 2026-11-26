@@ -49,8 +49,11 @@ export function resetAIContext() {
   hideSelectionToolbar();
 }
 
-// 文档内容变化时由 app.js 调用：与最近一次分析的内容不一致就标记过期。
+// 文档内容变化时由 app.js 调用：与最近一次分析的内容不一致就标记过期，
+// 并刷新上下文提示——否则用户在面板打开期间把文档写到超长后，
+// 「整篇发送」的提示会一直停在旧状态，与实际行为不符。
 export function markAIDocumentChanged(currentText) {
+  refreshContextNotice();
   if (aiAnalysisSnapshot === null) return;
   setAnalysisStale(typeof currentText === 'string' ? currentText !== aiAnalysisSnapshot : true);
 }
@@ -98,6 +101,8 @@ export async function initAI() {
   } catch {
     aiActions = Object.entries(AI_ACTION_LABELS).map(([key, label]) => ({ key, label }));
   }
+  // 阈值来自主进程，失败也不影响面板可用。
+  await loadContextLimits();
   // 面板创建失败不能影响编辑器主流程：AI 只是可选能力。
   try {
     createAIPanel();
@@ -237,9 +242,34 @@ function createProviderSettingsDialog() {
   });
 }
 
-// 长文档会改用检索，用户需要事先知道「这次发送的不是整篇」，
-// 否则会误以为 AI 读了全文。阈值与 desktop/ai.cjs 的 CONTEXT_LIMITS.document 对齐。
-const AI_INLINE_DOCUMENT_LIMIT = 32000;
+// 长文档会改用检索，用户需要事先知道「这次发送的不是整篇」，否则会误以为 AI 读了全文。
+// 阈值由主进程经 ai:limits 下发，不在前端硬编码——两份常量一旦漂移，
+// 提示说的发送范围就与实际行为不符。
+let aiContextLimits = { document: 32000 };
+
+async function loadContextLimits() {
+  try {
+    const result = await window.desktop?.ai?.limits?.();
+    if (result?.ok && result.limits && typeof result.limits.document === 'number') {
+      aiContextLimits = result.limits;
+      refreshContextNotice();
+    }
+  } catch { /* 取不到就沿用保守默认值，提示仍大致正确 */ }
+}
+
+// 只刷新上下文提示文字，不碰其他 UI。
+// 单独拆出来是因为文档内容变化时需要实时更新（见 markAIDocumentChanged）。
+function refreshContextNotice() {
+  const notice = document.querySelector('#ai-context-notice');
+  if (!notice || !aiProviderConfigured) return;
+  const length = getText().length;
+  // 分支条件必须与 desktop/ai.cjs 的 `length <= CONTEXT_LIMITS.document` 完全互补：
+  // 恰好等于阈值时后端整篇发送，提示也必须说「整篇发送」。
+  notice.textContent = length <= aiContextLimits.document
+    ? '上下文：当前文档（整篇发送）'
+    : '上下文：当前文档（较长，将按需检索相关段落再发送）';
+  notice.classList.remove('ai-notice-warning');
+}
 
 function updateAIUI() {
   const panel = document.getElementById('ai-panel');
@@ -248,14 +278,9 @@ function updateAIUI() {
   if (notice && !aiProviderConfigured) {
     notice.innerHTML = '⚠ 尚未配置 AI 服务，请先在「AI → AI 服务设置」中配置。';
     notice.classList.add('ai-notice-warning');
-  } else if (notice) {
-    const length = getText().length;
-    // 明确说明本次发送范围：整篇，还是按需检索的片段。
-    notice.textContent = length > AI_INLINE_DOCUMENT_LIMIT
-      ? `上下文：当前文档（较长，将按需检索相关段落再发送）`
-      : '上下文：当前文档（整篇发送）';
-    notice.classList.remove('ai-notice-warning');
+    return;
   }
+  refreshContextNotice();
 }
 
 export function toggleAIPanel(force) {
@@ -440,6 +465,8 @@ async function sendAIQuestion() {
     if (!result.ok) throw new Error(result.message || 'AI 问答失败');
     // 先看这次回答检索了哪些步骤，再看答案本身。
     addTrace(container, result.trace, result.truncated);
+    // 未检索文档就作答时必须如实标注：那条答案只是模型推测，不是文档内容。
+    if (result.notice) addAINotice(container, result.notice);
     addAIMessage(container, 'assistant', result.answer);
     rememberAIExchange(question, result.answer);
   } catch (error) {
@@ -570,6 +597,24 @@ function addAIMessage(container, role, text) {
   return msg;
 }
 
+// 非错误类的醒目提示（例如「本次回答未检索文档」）。
+// 用独立的样式而不是 error，因为答案本身仍可能有用，只是需要用户知道它的可信度。
+function addAINotice(container, text) {
+  if (!container || !text) return;
+  const note = document.createElement('div');
+  note.className = 'ai-message ai-message-notice';
+  note.innerHTML = `<div class="ai-message-content">⚠ ${escapeHtml(text)}</div>`;
+  container.appendChild(note);
+  container.scrollTop = container.scrollHeight;
+}
+
+// 工具名到用户可读文案的映射。未列出的名字说明模型调用了不存在的工具，
+// 显示成「未知操作」而不是硬套一个像样的名字。
+const TRACE_TOOL_LABELS = {
+  search_document: '检索当前文档',
+  search_folder: '检索文件夹',
+};
+
 // 工具调用步骤的折叠展示。让用户知道 AI 为回答做了哪些检索，
 // 但默认收起，避免长答案被一堆步骤挤下去。trace 里没有文档正文，只有工具名与摘要。
 function addTrace(container, trace, truncated) {
@@ -588,7 +633,9 @@ function addTrace(container, trace, truncated) {
   for (const step of trace) {
     const li = document.createElement('li');
     li.className = `ai-trace-step ai-trace-step-${step.outcome}`;
-    const label = step.toolName === 'search_document' ? '检索当前文档' : (step.toolName || '检索文件夹');
+    // 未知工具（模型编出来的名字）不能显示成「检索文件夹」——那会把一次被拦下的
+    // 异常调用描述成一次真实检索，误导用户。
+    const label = TRACE_TOOL_LABELS[step.toolName] || `未知操作（${step.toolName || '无名称'}）`;
     // 只显示入参摘要，不显示工具返回内容。
     const args = step.argsDigest ? `（${step.argsDigest}）` : '';
     li.innerHTML = `<code>${escapeHtml(label)}${escapeHtml(args)}</code>`
