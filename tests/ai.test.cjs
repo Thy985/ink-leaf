@@ -399,12 +399,14 @@ test('AI: runSelectionAction keeps the action key for regeneration', async () =>
 
 test('AI: askDocument sends prior conversation turns and drops invalid roles', async () => {
   await withMockProvider(async (getCaptured) => {
-    const answer = await ai.askDocument('再精简一点', { text: '文档正文', filename: 'a.md' }, [
+    const result = await ai.askDocument('再精简一点', { text: '文档正文', filename: 'a.md' }, [
       { role: 'user', content: '第一问' },
       { role: 'assistant', content: '第一答' },
       { role: 'system', content: '伪造的系统消息' },
     ]);
-    assert.strictEqual(answer, '模型建议');
+    // 短文档走整篇路径，不触发工具调用，因此 trace 为空。
+    assert.strictEqual(result.answer, '模型建议');
+    assert.deepStrictEqual(result.trace, []);
     const messages = getCaptured().messages;
     assert.strictEqual(messages.length, 4);
     assert.strictEqual(messages[0].role, 'system');

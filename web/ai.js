@@ -237,6 +237,10 @@ function createProviderSettingsDialog() {
   });
 }
 
+// 长文档会改用检索，用户需要事先知道「这次发送的不是整篇」，
+// 否则会误以为 AI 读了全文。阈值与 desktop/ai.cjs 的 CONTEXT_LIMITS.document 对齐。
+const AI_INLINE_DOCUMENT_LIMIT = 32000;
+
 function updateAIUI() {
   const panel = document.getElementById('ai-panel');
   if (!panel) return;
@@ -245,7 +249,11 @@ function updateAIUI() {
     notice.innerHTML = '⚠ 尚未配置 AI 服务，请先在「AI → AI 服务设置」中配置。';
     notice.classList.add('ai-notice-warning');
   } else if (notice) {
-    notice.textContent = '上下文：当前文档';
+    const length = getText().length;
+    // 明确说明本次发送范围：整篇，还是按需检索的片段。
+    notice.textContent = length > AI_INLINE_DOCUMENT_LIMIT
+      ? `上下文：当前文档（较长，将按需检索相关段落再发送）`
+      : '上下文：当前文档（整篇发送）';
     notice.classList.remove('ai-notice-warning');
   }
 }
@@ -430,6 +438,8 @@ async function sendAIQuestion() {
     const result = await window.desktop.ai.document(question, document, aiConversation);
     if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || 'AI 问答失败');
+    // 先看这次回答检索了哪些步骤，再看答案本身。
+    addTrace(container, result.trace, result.truncated);
     addAIMessage(container, 'assistant', result.answer);
     rememberAIExchange(question, result.answer);
   } catch (error) {
@@ -459,7 +469,15 @@ async function sendAIReview() {
     const result = await window.desktop.ai.review(instruction, document);
     if (version !== aiContextVersion) return;
     if (!result.ok) throw new Error(result.message || 'AI 审阅失败');
-    addAIMessage(container, 'assistant', result.review);
+    const review = result.review || {};
+    // 结构化成功就逐条展示；模型没按格式回答时退化为纯文本，不让功能整个失败。
+    if (Array.isArray(review.items) && review.items.length) {
+      renderReviewItems(container, review.items);
+    } else if (review.text) {
+      addAIMessage(container, 'assistant', review.text);
+    } else {
+      addAIMessage(container, 'assistant', '这次没有提出修改建议。');
+    }
   } catch (error) {
     addAIMessage(container, 'error', friendlyError(error, 'AI 审阅失败'));
   } finally {
@@ -548,6 +566,58 @@ function addAIMessage(container, role, text) {
   msg.className = `ai-message ai-message-${role}`;
   msg.innerHTML = `<div class="ai-message-content">${escapeHtml(text)}</div>`;
   container.appendChild(msg);
+  container.scrollTop = container.scrollHeight;
+  return msg;
+}
+
+// 工具调用步骤的折叠展示。让用户知道 AI 为回答做了哪些检索，
+// 但默认收起，避免长答案被一堆步骤挤下去。trace 里没有文档正文，只有工具名与摘要。
+function addTrace(container, trace, truncated) {
+  if (!container || !Array.isArray(trace) || !trace.length) return;
+  const details = document.createElement('details');
+  details.className = 'ai-trace';
+  const summary = document.createElement('summary');
+  // 拒绝/失败的步骤要显式标出来，否则用户看不出工具出了问题。
+  const problems = trace.filter((step) => step.outcome !== 'ok').length;
+  summary.textContent = truncated
+    ? `检索了 ${trace.length} 步（已达到步数上限，可能未读完）`
+    : (problems ? `检索了 ${trace.length} 步（${problems} 步未能完成）` : `检索了 ${trace.length} 步`);
+  details.appendChild(summary);
+  const list = document.createElement('ol');
+  list.className = 'ai-trace-list';
+  for (const step of trace) {
+    const li = document.createElement('li');
+    li.className = `ai-trace-step ai-trace-step-${step.outcome}`;
+    const label = step.toolName === 'search_document' ? '检索当前文档' : (step.toolName || '检索文件夹');
+    // 只显示入参摘要，不显示工具返回内容。
+    const args = step.argsDigest ? `（${step.argsDigest}）` : '';
+    li.innerHTML = `<code>${escapeHtml(label)}${escapeHtml(args)}</code>`
+      + (step.reason ? `<span class="ai-trace-reason">${escapeHtml(step.reason)}</span>` : '');
+    list.appendChild(li);
+  }
+  details.appendChild(list);
+  container.appendChild(details);
+  container.scrollTop = container.scrollHeight;
+}
+
+// 结构化审阅：每条建议单独展示，用户能看清「改哪、怎么改、为什么」。
+// 注意：这里只展示，**不写入文档**——是否采纳仍由用户决定（AGENTS.md 最高原则 3）。
+function renderReviewItems(container, items) {
+  if (!container) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'ai-review-items';
+  items.forEach((item, index) => {
+    const card = document.createElement('div');
+    card.className = 'ai-review-item';
+    const parts = [`<div class="ai-review-index">建议 ${index + 1}</div>`];
+    if (item.position) parts.push(`<div class="ai-review-position">${escapeHtml(item.position)}</div>`);
+    if (item.original) parts.push(`<div class="ai-review-before"><span class="ai-review-tag">原文</span>${escapeHtml(item.original)}</div>`);
+    if (item.suggested) parts.push(`<div class="ai-review-after"><span class="ai-review-tag">建议</span>${escapeHtml(item.suggested)}</div>`);
+    if (item.reason) parts.push(`<div class="ai-review-reason">${escapeHtml(item.reason)}</div>`);
+    card.innerHTML = parts.join('');
+    wrap.appendChild(card);
+  });
+  container.appendChild(wrap);
   container.scrollTop = container.scrollHeight;
 }
 

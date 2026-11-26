@@ -166,6 +166,28 @@ body.ai-open{padding-right:340px}
 .ai-input-row button:hover{background:var(--wash)}
 .ai-context-notice{padding:6px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}
 .ai-notice-warning{color:#a37a3e}
+/* 工具调用步骤：默认收起，让用户知道 AI 做了什么检索但不占屏。 */
+.ai-trace{align-self:flex-start;font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:6px;background:var(--paper);max-width:100%}
+.ai-trace summary{cursor:pointer;padding:6px 10px;list-style:none}
+.ai-trace summary::-webkit-details-marker{display:none}
+.ai-trace[open] summary{border-bottom:1px solid var(--line)}
+.ai-trace-list{margin:0;padding:6px 10px 8px 26px;display:flex;flex-direction:column;gap:4px}
+.ai-trace-step{font-size:11px;line-height:1.5}
+.ai-trace-step code{background:var(--wash);padding:1px 5px;border-radius:4px;color:var(--ink)}
+.ai-trace-step-rejected code{color:#a34c3e}
+.ai-trace-step-error code{color:#a37a3e}
+.ai-trace-reason{margin-left:6px;color:var(--muted)}
+/* 结构化审阅：每条建议独立成卡，原文与建议并排可对比。 */
+.ai-review-items{display:flex;flex-direction:column;gap:10px}
+.ai-review-item{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);font-size:13px;line-height:1.7}
+.ai-review-index{font-size:11px;font-weight:600;letter-spacing:1px;color:var(--accent)}
+.ai-review-position{font-size:11px;color:var(--muted)}
+.ai-review-before,.ai-review-after{white-space:pre-wrap;padding:8px 10px;border-radius:6px}
+.ai-review-tag{display:inline-block;font-size:10px;font-weight:600;letter-spacing:1px;padding:1px 6px;border-radius:4px;margin-right:6px}
+.ai-review-before{background:var(--wash);color:var(--muted)}
+.ai-review-after{background:#f0f7f2}
+.ai-review-tag{background:rgba(0,0,0,.05)}
+.ai-review-reason{font-size:11px;color:var(--muted);padding-left:2px}
 .ai-proposal-card{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--paper);margin-bottom:10px}
 .ai-proposal-header{display:flex;justify-content:space-between;align-items:center}
 .ai-proposal-action{font-size:11px;font-weight:600;letter-spacing:1px;color:var(--accent)}

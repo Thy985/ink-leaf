@@ -3,7 +3,7 @@
 // 借鉴来的挂载点：校验发生在执行之前，而不是执行完之后再事后检查。
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { SEARCH_FOLDER_SCHEMA, validate } from './schema.mjs';
+import { SEARCH_FOLDER_SCHEMA, SEARCH_DOCUMENT_SCHEMA, validate } from './schema.mjs';
 
 const require = createRequire(import.meta.url);
 const folders = require('../folders.cjs');
@@ -46,12 +46,48 @@ function trimContext(text) {
 // 调用方需先映射成路径字符串（ai.cjs 的 runAgent 已代为处理）。
 // 这里再过滤一遍：不是绝对路径的条目直接丢弃，避免一个坏数据让整轮工具调用
 // 在深层抛出 TypeError，再被包装成「无法连接 AI 服务」这种误导性提示。
-export function createTools({ folders: roots = [], io } = {}) {
+export function createTools({ folders: roots = [], io, document: currentDocument = null } = {}) {
   const usableRoots = (Array.isArray(roots) ? roots : [])
     .map((entry) => (entry && typeof entry === 'object' ? entry.path : entry))
     .filter((entry) => typeof entry === 'string' && path.isAbsolute(entry));
   roots = usableRoots;
+  // 当前文档作为「问答上下文」存在时，它自己就是一个检索范围。
+  // 与 search_folder 分开是为了让权限边界在工具清单里一眼可辨：
+  // 读已导入文件夹是另一类能力，读当前文档是又一类能力。
+  const hasDocument = currentDocument && typeof currentDocument.text === 'string' && currentDocument.text.length > 0;
   const registry = {
+    search_document: {
+      label: '检索当前文档',
+      description: '在当前正在编辑的这篇文档内检索关键词，返回行号与上下文片段。只能读当前这一篇文档，不能访问其他文件。',
+      schema: SEARCH_DOCUMENT_SCHEMA,
+      // 只读工具：不做任何写操作，因此无需额外确认。
+      mutates: false,
+      async run(args) {
+        if (!hasDocument) {
+          return { results: [], totalMatches: 0, truncated: false, note: '当前没有可检索的文档内容。' };
+        }
+        const text = currentDocument.text;
+        let matches;
+        try {
+          matches = folders.extractMatches(text, args.query, {});
+        } catch {
+          return { results: [], totalMatches: 0, truncated: false, note: '检索关键词无效，请换一个。' };
+        }
+        if (!matches.length) {
+          return { results: [], totalMatches: 0, truncated: false, note: '文档中没有找到匹配内容；可以换一个关键词再试。' };
+        }
+        const hits = matches.slice(0, MAX_RESULTS).map((match) => ({
+          line: match.lineNumber,
+          context: trimContext(match.context),
+        }));
+        return {
+          results: [{ name: currentDocument.filename || '当前文档', hits }],
+          totalMatches: matches.length,
+          truncated: matches.length > MAX_RESULTS,
+          note: '以下为当前文档中的命中片段。',
+        };
+      },
+    },
     search_folder: {
       label: '检索文件夹',
       description: '在用户已导入的文件夹中全文检索关键词，返回命中的文档路径、行号与上下文片段。只能访问已导入文件夹。',
