@@ -37,3 +37,8 @@ android/app/src/main/assets/www/
 # Local worktrees and agent scratch
 .worktrees/
 .superpowers/
+
+# 临时提交信息文件
+.commit-msg.tmp
+# PR 描述草稿
+.pr-body.tmp

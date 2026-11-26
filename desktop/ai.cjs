@@ -6,9 +6,6 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = fs.promises;
-const http = require('node:http');
-const https = require('node:https');
-const { pathToFileURL } = require('node:url');
 
 // ---------------------------------------------------------------------------
 // Provider Adapter
@@ -50,7 +47,7 @@ async function writeProviderConfig(config) {
 const DEFAULT_TIMEOUT_MS = 120000;
 
 // 部分网关会在 JSON 后追加 `data: [DONE]`，或直接用 SSE 格式返回（即使请求了 stream:false）。
-// 这里先按 JSON 解析，失败再取出花括号区间 / 逐行解析 data:，避免把正常回答判成解析失败。
+// provider.mjs 里的纠偏中间件共用同一套解析规则；这里保留同步版本供单元测试与调用方使用。
 function parseProviderPayload(text) {
   if (typeof text !== 'string') return null;
   const trimmed = text.trim();
@@ -87,72 +84,48 @@ function providerErrorMessage(statusCode, message) {
   return statusCode >= 400 ? `AI 服务返回错误（HTTP ${statusCode}）` : 'AI 服务返回解析失败';
 }
 
+// 用 Vercel AI SDK 发一次非流式对话。
+// 原先这里是手写 http/https 请求；改用 SDK 后协议细节交给 SDK，
+// 但保持对外签名与错误语义完全不变，调用方无需感知底层更换。
+// provider.mjs 是 ESM（ai/ 目录下），通过动态 import 从 CommonJS 加载。
+// 这里只依赖 SDK 的 provider 工厂与错误映射；其余逻辑仍是 CommonJS。
+let providerModule = null;
+async function loadProvider() {
+  if (!providerModule) providerModule = await import('./ai/provider.mjs');
+  return providerModule;
+}
+
 async function callProvider(messages, options = {}) {
   const config = await readProviderConfig();
   if (!config.apiKey) throw new Error('尚未配置 AI 服务 API Key');
   if (!config.baseUrl) throw new Error('尚未配置 AI 服务地址');
 
-  const body = JSON.stringify({
-    model: config.model,
-    messages,
-    max_tokens: config.maxTokens,
-    temperature: options.temperature ?? 0.3,
-    stream: false,
-  });
+  const { createProvider, mapSdkError } = await loadProvider();
+  const { generateText } = await import('ai');
 
+  // 超时语义沿用原先的 DEFAULT_TIMEOUT_MS（可由 options.timeoutMs 覆盖）。
   const timeoutMs = typeof options.timeoutMs === 'number' && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
+  const provider = createProvider({ baseUrl: config.baseUrl, apiKey: config.apiKey, name: config.name, timeoutMs });
 
-  return new Promise((resolve, reject) => {
-    const url = new URL(`${config.baseUrl}/chat/completions`);
-    const isHttps = url.protocol === 'https:';
-    const httpModule = isHttps ? https : http;
+  // 系统消息从 messages 里取出交给 system 参数；SDK 对「首条 system」有更严格的约束，
+  // 拆开传能保持与原先完全一致的发送顺序。
+  const system = messages.find((m) => m.role === 'system')?.content;
+  const rest = messages.filter((m) => m.role !== 'system');
 
-    let settled = false;
-    let timer = null;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      fn(value);
-    };
-
-    const request = httpModule.request(url.toString(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-        'Content-Length': Buffer.byteLength(body),
-      },
-    }, (response) => {
-      let responseData = '';
-      response.on('data', (chunk) => { responseData += chunk.toString('utf8'); });
-      response.on('end', () => {
-        const parsed = parseProviderPayload(responseData);
-        if (!parsed || parsed.error) {
-          const raw = parsed && parsed.error
-            ? (typeof parsed.error === 'string' ? parsed.error : parsed.error.message)
-            : '';
-          finish(reject, new Error(providerErrorMessage(response.statusCode, raw)));
-          return;
-        }
-        const content = parsed.choices?.[0]?.message?.content;
-        if (typeof content !== 'string') {
-          finish(reject, new Error('AI 服务返回格式异常'));
-          return;
-        }
-        finish(resolve, content);
-      });
-      response.on('error', (error) => finish(reject, new Error('AI 服务响应失败')));
+  try {
+    const result = await generateText({
+      model: provider(config.model),
+      system,
+      messages: rest.map((m) => ({ role: m.role, content: m.content })),
+      temperature: options.temperature ?? 0.3,
+      maxOutputTokens: config.maxTokens,
+      // 与原实现一致：失败立刻上报，不自动重试。
+      maxRetries: 0,
     });
-    request.on('error', (error) => finish(reject, new Error(`无法连接 AI 服务: ${error.message || '网络错误'}`)));
-    // 没有超时的话，服务端挂起会让面板永远停在「处理中」。
-    timer = setTimeout(() => {
-      request.destroy(new Error('AI 服务响应超时，请稍后重试'));
-      finish(reject, new Error('AI 服务响应超时，请稍后重试'));
-    }, timeoutMs);
-    request.write(body);
-    request.end();
-  });
+    return result.text;
+  } catch (error) {
+    throw mapSdkError(error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -487,4 +460,42 @@ module.exports = {
   SYSTEM_PROMPT,
   ACTIONS,
   CONTEXT_LIMITS,
+  // H0 Harness：带工具的一轮问答。工具层只读，且只能访问已导入文件夹。
+  // 通过动态 import 加载，保持 ai.cjs 在无 Electron/SDK 环境下仍可被单元测试直接 require。
+  runAgent,
+  createTools,
 };
+
+// 便捷包装：给定已导入文件夹列表，跑一轮可调用工具的问答。
+// 调用方（main.cjs）传入 sessionState.folders 的路径数组即可。
+async function runAgent(options = {}) {
+  const [{ runAgent: run }, { createTools: makeTools }, { createProvider }] = await Promise.all([
+    import('./ai/harness.mjs'),
+    import('./ai/tools.mjs'),
+    import('./ai/provider.mjs'),
+  ]);
+  const config = await readProviderConfig();
+  if (!config.apiKey) throw new Error('尚未配置 AI 服务 API Key');
+  if (!config.baseUrl) throw new Error('尚未配置 AI 服务地址');
+  const { registry } = makeTools({ folders: options.folders || [] });
+  const provider = createProvider({ baseUrl: config.baseUrl, apiKey: config.apiKey, name: config.name, timeoutMs: options.timeoutMs });
+  try {
+    return await run({
+      model: provider(config.model),
+      system: options.system || SYSTEM_PROMPT,
+      messages: options.messages || [],
+      registry,
+      maxSteps: options.maxSteps,
+      temperature: options.temperature,
+    });
+  } catch (error) {
+    const { mapSdkError } = await import('./ai/provider.mjs');
+    throw mapSdkError(error);
+  }
+}
+
+// 供 main.cjs 在不需要跑模型时直接拿到工具注册表（例如 MCP 服务器复用同一套工具）。
+async function createTools({ folders = [] } = {}) {
+  const { createTools: makeTools } = await import('./ai/tools.mjs');
+  return makeTools({ folders });
+}
