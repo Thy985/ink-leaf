@@ -21,14 +21,14 @@
     "test:mobile": "python3 tests/web/mobile_test.py"
   },
   "devDependencies": {
+    "dompurify": "3.4.17",
     "electron": "44.9.2",
     "electron-builder": "26.15.3",
-    "playwright": "1.64.1",
-    "dompurify": "3.4.17",
     "esbuild": "0.25.11",
     "highlight.js": "^11.12.0",
     "katex": "0.19.0",
-    "markdown-it": "14.3.3"
+    "markdown-it": "14.3.3",
+    "playwright": "1.64.1"
   },
   "build": {
     "appId": "app.inkstone.editor",
@@ -106,5 +106,9 @@
       }
     ]
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.96",
+    "ai": "7.0.183"
+  }
 }
