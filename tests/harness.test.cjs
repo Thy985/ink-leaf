@@ -163,23 +163,61 @@ test('H0: guard 拒绝不符合 schema 的参数', async () => {
   assert.strictEqual((await tools.guard('search_folder', { query: 42 }, registry)).ok, false, '非字符串应拒绝');
 });
 
-test('H0: search_folder 只检索已导入文件夹，无法越界', async () => {
+test('H0: search_folder 拒绝未导入的文件夹而不是静默搜全部', async () => {
   await withTempFolder({ 'inside.md': '命中关键词 alpha\n' }, async (root) => {
-    const { tools, provider } = await mods();
-      const { registry } = tools.createTools({ folders: [root] });
-    // 指向别的目录：不在已导入列表内，工具应返回空结果而不是去读那个目录。
+    const { tools } = await mods();
+    const { registry } = tools.createTools({ folders: [root] });
+    // 指向父目录：不在已导入列表内。必须明确拒绝，而**不能**退化成搜全部——
+    // 否则用户以为只搜了一个文件夹，实际范围更大。
     const outside = path.join(root, '..');
     const result = await registry.search_folder.run({ query: 'alpha', folder: outside });
-    assert.ok(!result.results.some((r) => String(r.folder) === outside), '不应检索未导入的文件夹');
+    assert.deepStrictEqual(result.results, [], '越界文件夹不应返回任何结果');
+    assert.match(result.note, /只能检索已在墨页中导入的文件夹/);
+  });
+});
+
+test('H0: search_folder 的 folder 参数确实生效（限定范围）', async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'inkstone-h0-scope-'));
+  const a = path.join(parent, 'a');
+  const b = path.join(parent, 'b');
+  await fs.mkdir(a);
+  await fs.mkdir(b);
+  await fs.writeFile(path.join(a, 'a.md'), '共同关键词 alpha\n', 'utf8');
+  await fs.writeFile(path.join(b, 'b.md'), '共同关键词 alpha\n', 'utf8');
+  try {
+    const { tools } = await mods();
+    const { registry } = tools.createTools({ folders: [a, b] });
+    // 不限定时应命中两个文件夹。
+    const all = await registry.search_folder.run({ query: 'alpha' });
+    assert.strictEqual(all.results.length, 2, `不限范围应命中 2 个，实际 ${all.results.length}`);
+    // 限定其中一个时只应命中它。
+    const only = await registry.search_folder.run({ query: 'alpha', folder: a });
+    assert.strictEqual(only.results.length, 1, `限定范围应命中 1 个，实际 ${only.results.length}`);
+    assert.strictEqual(only.results[0].name, 'a.md');
+  } finally {
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test('H0: 已导入文件夹的路径比较不因大小写不同而误拒（Windows）', async (t) => {
+  if (process.platform !== 'win32') { t.skip('仅 Windows 需要大小写不敏感比较'); return; }
+  await withTempFolder({ 'x.md': '关键词 alpha\n' }, async (root) => {
+    const { tools } = await mods();
+    const { registry } = tools.createTools({ folders: [root] });
+    // 同一目录换一种大小写/斜杠写法，应当仍然被认作已导入。
+    const variant = root.toUpperCase().replace(/\\/g, '/');
+    const result = await registry.search_folder.run({ query: 'alpha', folder: variant });
+    assert.strictEqual(result.results.length, 1, '大小写不同的同一目录不应被拒绝');
   });
 });
 
 test('H0: 未导入任何文件夹时工具明确告知而不是报错', async () => {
-  const { tools, provider } = await mods();
-      const { registry } = tools.createTools({ folders: [] });
+  const { tools } = await mods();
+  const { registry } = tools.createTools({ folders: [] });
   const result = await registry.search_folder.run({ query: 'anything' });
   assert.deepStrictEqual(result.results, []);
-  assert.match(result.note, /没有找到/);
+  // 这里的提示要说清「还没导入文件夹」，而不是让模型误以为「关键词没搜到」。
+  assert.match(result.note, /没有已导入的文件夹/);
 });
 
 // ---------------------------------------------------------------------------

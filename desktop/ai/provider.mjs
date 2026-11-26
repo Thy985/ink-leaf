@@ -88,6 +88,10 @@ function asJsonResponse(payload, response) {
   return new Response(JSON.stringify(payload), { status: response.status, statusText: response.statusText, headers });
 }
 
+// 纠偏中间件最多缓冲这么多响应体。正常 chat completion 远小于此，
+// 设上限是为了防止异常网关把整个主进程拖进 OOM。
+const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+
 // 纠偏中间件：应对两种常见的网关偏离。
 //   1) 非流式请求却回 SSE —— SDK 按 content-type 选择解析器，会把整个 SSE 当 JSON 解析而报错；
 //   2) 正常 JSON 后面追加 `data: [DONE]` —— JSON.parse 遇到尾随字符直接失败。
@@ -99,7 +103,38 @@ export async function normalizingFetch(input, init) {
   if (wantsStream) return response;
 
   const contentType = response.headers.get('content-type') || '';
-  const text = await response.text();
+  // 这里必须缓冲整个响应体才能判断它是不是被网关改写成 SSE 的 JSON，
+  // 所以要先设一个上限：万一网关返回超大错误页（比如整份访问日志），
+  // 无上限的 text() 会把整个主进程拖进 OOM。超过上限就当普通响应交给 SDK 处理。
+  const declared = Number(response.headers.get('content-length'));
+  const maxBuffer = MAX_BUFFER_BYTES;
+  if (response.body && Number.isFinite(declared) && declared > maxBuffer) {
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.length > maxBuffer) {
+        // 读到这里已经足够判断它不是我们要的小 JSON 了，放弃缓冲。
+        reader.cancel().catch(() => {});
+        return new Response(text.slice(0, maxBuffer), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+    }
+    text += decoder.decode();
+  } catch {
+    reader.cancel().catch(() => {});
+    throw new Error('无法读取 AI 服务响应');
+  }
 
   if (contentType.includes('text/event-stream')) {
     const assembled = assembleSseCompletion(text);

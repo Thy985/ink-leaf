@@ -16,11 +16,22 @@ const MAX_CONTEXT_CHARS = 300;
 
 // 已导入文件夹解析：只接受 session 里登记过的绝对路径。
 // 模型给的名字不可信，绝不能让它在任意磁盘位置检索。
+// Windows 路径大小写不敏感，且盘符可能有 \\?\ 前缀，所以比较前统一规范化：
+// \?\C:\X 与 c:/x 必须判为同一个目录，否则合法请求会被误拒。
+function normalizeForCompare(p) {
+  let value = String(p || '');
+  // 去掉 Windows 扩展长度前缀，它只是路径写法而不是不同位置。
+  if (/^\\\\\?\\/.test(value)) value = value.slice(4);
+  value = path.normalize(value);
+  // Windows 上大小写不敏感；其他平台保留大小写（大小写敏感的卷上 C:/A 与 c:/a 确为不同目录）。
+  return process.platform === 'win32' ? value.toLowerCase() : value;
+}
+
 function resolveRoot(requested, roots) {
   if (!Array.isArray(roots) || !roots.length) return { ok: false, reason: '当前没有已导入的文件夹' };
   if (requested === undefined) return { ok: true, roots };
-  const target = path.resolve(requested);
-  const matched = roots.find((root) => path.resolve(root) === target);
+  const target = normalizeForCompare(path.resolve(requested));
+  const matched = roots.find((root) => normalizeForCompare(path.resolve(root)) === target);
   if (!matched) return { ok: false, reason: '只能检索已在墨页中导入的文件夹' };
   return { ok: true, roots: [matched] };
 }
@@ -41,12 +52,16 @@ export function createTools({ folders: roots = [], io } = {}) {
       // 只读工具：不做任何写操作，因此无需额外确认。
       mutates: false,
       async run(args) {
+        // 模型可以用 folder 限定范围；不在已导入列表里的路径一律拒绝，
+        // 而不是静默退化成「搜全部」——那样会让用户以为只搜了一个文件夹。
+        const scope = resolveRoot(args.folder, roots);
+        if (!scope.ok) return { results: [], totalMatches: 0, truncated: false, note: scope.reason };
         const options = {};
         if (args.regex) options.regex = true;
         const collected = [];
         let totalMatches = 0;
         let truncated = false;
-        for (const root of roots) {
+        for (const root of scope.roots) {
           const result = await folders.searchFolder(root, args.query, { ...options, io });
           totalMatches += result.totalMatches || 0;
           if (result.truncated) truncated = true;
