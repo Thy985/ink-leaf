@@ -73,6 +73,9 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '检索当前文档',
       description: '在当前正在编辑的这篇文档内检索关键词，返回行号与上下文片段。只能读当前这一篇文档，不能访问其他文件。',
       schema: SEARCH_DOCUMENT_SCHEMA,
+      // 范围声明：只读当前文档。guard 会复核 hasDocument 与 schema 不含路径类参数。
+      scope: 'document',
+      hasDocument,
       // 只读工具：不做任何写操作，因此无需额外确认。
       mutates: false,
       async run(args) {
@@ -105,7 +108,8 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '检索文件夹',
       description: '在用户已导入的文件夹中全文检索关键词，返回命中的文档路径、行号与上下文片段。只能访问已导入文件夹。',
       schema: SEARCH_FOLDER_SCHEMA,
-      // 供 guard 做执行前的范围复核；不对外暴露给模型。
+      // 范围声明：只读已导入文件夹。
+      scope: 'folders',
       roots,
       // 只读工具：不做任何写操作，因此无需额外确认。
       mutates: false,
@@ -154,6 +158,8 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '列出工作区',
       description: '列出用户已导入的工作区：包含哪些文件夹、每篇文档的标题与相对路径。只描述结构，不返回正文。',
       schema: LIST_WORKSPACE_SCHEMA,
+      // 范围声明：只读已导入文件夹。
+      scope: 'folders',
       roots,
       mutates: false,
       async run() {
@@ -168,6 +174,8 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '查询链接关系',
       description: '查询某篇文档的反向链接（哪些文档用 [[标题]] 指向它），或列出指向不存在文档的死链。用于理解文档之间的关系。',
       schema: FIND_LINKS_SCHEMA,
+      // 范围声明：只读已导入文件夹。
+      scope: 'folders',
       roots,
       mutates: false,
       async run(args) {
@@ -203,24 +211,60 @@ export function createTools({ folders: roots = [], io, document: currentDocument
   return { registry, roots };
 }
 
-// 执行前的守卫：工具名白名单 → schema 校验 → 文件夹范围复核。
+// 执行前的守卫：工具名白名单 → schema 校验 → 读取范围复核。
 // 返回 { ok: true } 或 { ok: false, reason }；拒绝原因会作为工具结果回填给模型，
 // 让它有机会自我纠正，而不是抛异常中断整轮。
 //
 // 实测确认 SDK 不会在调用 execute 前替我们校验工具名与参数（探针：非法参数会原样传到 execute），
 // 所以这里是唯一一道拦得住不可信模型输入的关口，不能只靠 run() 内部自觉。
+//
+// 范围复核（H1 复审 I3）：每个工具必须显式声明 scope，guard 按声明复核。
+// 早先只有「带 folder 参数 + 有 roots」的工具会被复核，search_document 这类
+// 靠闭包自保的工具不在复核范围内——当前安全，但任何人给它加个路径参数，
+// guard 都不会拦，而注释却写着它是安全钩子。
+//
+// 要点：
+// 1. **没有 scope 声明就拒绝**，不设默认值。「漏写声明」必须是显式错误，
+//    而不是悄悄落到最宽松的分支——那等于把安全默认值调反（复审 finding 4）。
+// 2. scope='document' 用**白名单**复核参数：只有该 scope 允许的字段能出现，
+//    其余一律拒绝。黑名单（列举 path/folder/docId…）挡不住 source/uri/name
+//    这类同义字段，等于给未来留了绕过口（复审 finding 3）。
+const SCOPE_RULES = Object.freeze({
+  folders: { allowedParams: ['query', 'folder', 'regex', 'title', 'broken'] },
+  document: { allowedParams: ['query'] },
+});
+
 export async function guard(toolName, args, registry) {
   if (typeof toolName !== 'string' || !Object.prototype.hasOwnProperty.call(registry, toolName)) {
     return { ok: false, reason: `不在允许列表内的工具：${toolName}` };
   }
-  const checked = validate(registry[toolName].schema, args);
-  if (!checked.ok) return { ok: false, reason: checked.reason };
-  // 带文件夹参数的工具，在执行前就确认它指向已导入文件夹。
-  // 放在 guard 而不是 run 里，是为了让「越界」与「参数非法」一样得到统一的拒绝轨迹。
   const spec = registry[toolName];
-  if (checked.value.folder !== undefined && spec.roots) {
-    const scope = resolveRoot(checked.value.folder, spec.roots);
-    if (!scope.ok) return { ok: false, reason: scope.reason };
+  const checked = validate(spec.schema, args);
+  if (!checked.ok) return { ok: false, reason: checked.reason };
+
+  const rule = SCOPE_RULES[spec.scope];
+  if (!rule) {
+    return { ok: false, reason: `工具范围未声明或不可识别：${spec.scope || '(缺失)'}` };
+  }
+
+  // 白名单复核：schema 里出现的每个参数都必须是该 scope 允许的。
+  const declaredProps = Object.keys(spec.schema?.properties || {});
+  const unexpected = declaredProps.filter((key) => !rule.allowedParams.includes(key));
+  if (unexpected.length) {
+    return { ok: false, reason: `工具范围声明与实现不符：${spec.scope} 范围不应接受参数 ${unexpected.join('、')}` };
+  }
+
+  if (spec.scope === 'folders' && !Array.isArray(spec.roots)) {
+    return { ok: false, reason: '工具范围声明与实现不符：缺少已导入文件夹' };
+  }
+  if (spec.scope === 'document' && !spec.hasDocument) {
+    // 这属于接线错误，不是用户的操作问题；措辞要能让维护者看懂，
+    // 但也不能让最终用户以为是自己做错了什么（复审 finding 5）。
+    return { ok: false, reason: '本次没有可供检索的文档' };
+  }
+  if (checked.value.folder !== undefined) {
+    const resolved = resolveRoot(checked.value.folder, spec.roots);
+    if (!resolved.ok) return { ok: false, reason: resolved.reason };
   }
   return { ok: true, value: checked.value };
 }

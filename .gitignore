@@ -45,3 +45,6 @@ android/app/src/main/assets/www/
 
 # PR 描述草稿
 .pr-body.tmp
+
+# 临时 PR 草稿
+.pr-body.tmp
