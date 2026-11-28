@@ -298,7 +298,10 @@ def run():
           window.__richInputs = 0;
           e.addEventListener('input', () => window.__richInputs++);
           e.focus();
-          const n = e.firstChild.firstChild || e.firstChild;
+          // Issue #52: block markers live in a non-editable decoration, so the editable run is
+          // `.block-content`; fall back to the block itself for blocks without one.
+          const block = e.firstElementChild;
+          const n = (block.querySelector('.block-content') || block).firstChild || block;
           const end = n.textContent.length;
           getSelection().setBaseAndExtent(n, end, n, end);
           e.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true, data: ''}));

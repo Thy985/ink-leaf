@@ -181,7 +181,8 @@ with sync_playwright() as playwright:
         load(page, raw)
         blur(page)
         assert page.locator("#editor .heading").count() == 2
-        assert page.locator("#editor .heading").nth(0).inner_text() == "标题"
+        # issue #52: the underline is a non-editable decoration, never part of the heading text.
+        assert page.locator("#editor .heading .block-content").nth(0).inner_text() == "标题"
         assert page.locator("#outline button").nth(0).inner_text() == "标题"
         assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
         assert markdown(page) == raw
@@ -251,7 +252,8 @@ with sync_playwright() as playwright:
 
         load(page, "## 标题 ##")
         blur(page)
-        assert page.locator("#editor .heading").inner_text() == "标题"
+        # issue #52: both the opening and closing `##` are decorations, so heading text is 标题.
+        assert page.locator("#editor .heading .block-content").inner_text() == "标题"
         assert page.locator("#outline button").inner_text() == "标题"
         assert markdown(page) == "## 标题 ##"
         cases.append("ATX 闭合井号显示与大纲")

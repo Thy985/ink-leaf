@@ -20,6 +20,8 @@ const SAMPLE = "# 让文字，也让公式成形\n\n这里是 **墨页 v0.9**。
 let blocks = [];
 let doc = null;
 let activeId = null;
+// The block whose marker is momentarily shown as source (see `restore`'s `reveal`).
+let revealedId = null;
 let composing = false;
 let compositionTimer;
 let mobileBusy = false;
@@ -53,9 +55,58 @@ function toast(message) {
 }
 function readBlock(node) {
   // Generated nodes contain only text/spans. Native BRs are normalized for fallback input paths.
+  // A full block's lone BR is a caret host, not a newline.
   if (node.childNodes.length === 1 && node.firstChild.nodeName === 'BR') return '';
-  const walk = (n) => n.nodeType === Node.ELEMENT_NODE && n.classList.contains('block-preview') ? '' : n.nodeType === Node.TEXT_NODE ? n.data : n.nodeName === 'BR' ? '\n' : [...n.childNodes].map(walk).join('');
+  const walk = (n) => {
+    if (n.nodeType === Node.ELEMENT_NODE) {
+      if (n.classList.contains('block-preview') || n.classList.contains('block-mark')) return '';
+      // An empty `.block-content` holds one filler BR; counting it as `\n` duplicates the line.
+      if (n.classList.contains('block-content') && n.childNodes.length === 1 && n.firstChild.nodeName === 'BR') return '';
+    }
+    return n.nodeType === Node.TEXT_NODE ? n.data : n.nodeName === 'BR' ? '\n' : [...n.childNodes].map(walk).join('');
+  };
   return walk(node);
+}
+// Marker text the editable content run does not own. It is put back around the DOM text so a
+// native InputEvent (`storeDOM` re-reads the DOM) still yields the exact Markdown source.
+const MARK_PREFIX_RE = { heading: /^ {0,3}#{1,6}(?:[ \t]+|$)/, list: /^[ \t]*(?:[-+*]|\d+[.)])[ \t]+/, quote: /^ {0,3}> ?/ };
+function withMarkers(node, text) {
+  const block = blocks.find((b) => b.id === node.dataset.id);
+  if (!block) return text;
+  // Rich blocks expose their full raw source in `.block-source`; do not add the block prefix a
+  // second time. Decide from the DOM because `storeDOM` runs before `blocks` is rebuilt.
+  if (node.querySelector('.block-source')) return text;
+  if (block.style === 'setext') {
+    // Content first, underline last: the underline is a trailing decoration, not a prefix.
+    const underline = node.querySelector('.block-mark.setext-underline')?.textContent || '';
+    const closing = node.querySelector('.block-mark[data-mark="heading"]:not(.setext-underline)')?.textContent || '';
+    return text + closing + underline;
+  }
+  if (!isBlockMarker(block)) return text;
+  // A task item renders a checkbox instead of the `- [ ] ` decoration, so the live DOM has no
+  // marker to read; fall back to the source prefix rather than silently dropping it. The
+  // `.task-body` run already excludes `[ ] `, so the whole source prefix is what is missing.
+  const task = block.type === 'list' && node.querySelector('.task-box');
+  const prefix = (task ? '' : node.querySelector('.block-mark[data-mark]')?.textContent)
+    || block.raw.match(/^[ \t]*(?:[-+*]|\d+[.)])[ \t]+\[[ xX]\][ \t]+/)?.[0]
+    || block.raw.match(MARK_PREFIX_RE[block.type])?.[0] || '';
+  return prefix + text;
+}
+// Live source length of a rendered block. A marker's text lives in its decoration, not the run,
+// so `readBlock` alone under-counts; offsets are in source coordinates, so the marker counts.
+function blockLength(node) {
+  const block = blocks.find((b) => b.id === node.dataset.id);
+  const run = node.querySelector('.block-content');
+  if (!run) return readBlock(node).length;
+  // Task items show a checkbox for `- [ ] `; that checkbox is not text, so a model-side count of
+  // the raw prefix is the only correct measure (the DOM carries no marker for them).
+  if (block && node.querySelector('.task-box')) {
+    const task = block.raw.match(/^([ \t]*(?:[-+*]|\d+[.)])[ \t]+\[[ xX]\][ \t]+)/);
+    return (task ? task[1].length : 0) + readBlock(node).length;
+  }
+  const mark = node.querySelector('.block-mark[data-mark]')?.textContent.length || 0;
+  const suffix = node.querySelector('.block-mark[data-mark="heading"]:last-child')?.textContent.length || 0;
+  return mark + readBlock(node).length + suffix;
 }
 function point(node, offset) {
   if (!node || !editor.contains(node)) return null;
@@ -68,11 +119,27 @@ function point(node, offset) {
   if (el.closest('.block-preview')) return null;
   const index = blocks.findIndex((b) => b.id === block.dataset.id);
   if (index < 0) return null;
+  // Markers are not text: a caret that lands on one (or in the padding before the content) is
+  // clamped to the content edge, so offsets never count `## ` or `- ` as characters the user typed.
+  const bounds = contentNode(blocks[index]);
+  const content = block.querySelector('.block-content');
+  const prior = [...editor.children].slice(0, index).reduce((n, b) => n + blockLength(b) + 1, 0);
+  if (!content) {
+    // Plain blocks map their own DOM text directly; the clamp keeps `textContent`-based callers
+    // (which count hidden markers) from drifting off the source.
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    try { range.setEnd(node, offset); } catch { return null; }
+    return prior + Math.min(Math.max(range.toString().length, bounds.start), bounds.end);
+  }
+  if (!content.contains(node)) return prior + (el.closest('.block-mark') ? bounds.end : bounds.start);
   const range = document.createRange();
-  range.selectNodeContents(block);
+  range.selectNodeContents(content);
   try { range.setEnd(node, offset); } catch { return null; }
-  const prior = [...editor.children].slice(0, index).reduce((n, b) => n + readBlock(b).length + 1, 0);
-  return prior + range.toString().length;
+  // `storeDOM` calls this before the model is rebuilt, so the block may still hold its old raw.
+  // Measure the marker live from the DOM rather than trusting possibly-stale bounds.
+  const livePrefix = block.querySelector('.block-mark[data-mark]')?.textContent.length || 0;
+  return prior + livePrefix + range.toString().length;
 }
 function selection() {
   if (sourceMode) return { a: source.selectionStart, f: source.selectionEnd };
@@ -92,16 +159,29 @@ function locate(position) {
 function domPoint(pos) {
   const { block, offset } = locate(pos);
   const el = [...editor.children].find((n) => n.dataset.id === block.id);
-  let remaining = offset;
-  const walker = document.createTreeWalker(el.querySelector('.block-source') || el, NodeFilter.SHOW_TEXT);
+  const bounds = contentNode(block);
+  // `.block-content` is the editable run that follows the block marker; keep its wrapper, or the
+  // range would swallow the marker's earlier sibling text nodes.
+  const hasRun = Boolean(el.querySelector('.block-content'));
+  const root = el.querySelector('.block-content') || el.querySelector('.block-source') || el;
+  const runText = root.textContent || '';
+  // A marker run never contains the marker source; other runs (rich `.block-source`, plain
+  // blocks) already start at source offset zero. Clamp to that run's own length.
+  let remaining = Math.min(Math.max(offset - (hasRun ? bounds.start : 0), 0), runText.length);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node;
   while ((node = walker.nextNode())) {
     if (remaining <= node.length) return [node, remaining];
     remaining -= node.length;
   }
-  return [el, el.childNodes.length];
+  // A block whose content is empty has no text node to hold the caret. Point before its filler
+  // `<br>` (offset 0): after it, Chromium resolves the caret to the next line and typing lands
+  // in the neighbouring block.
+  return [root, 0];
 }
-function restore(sel, focus = true) {
+// `reveal` pins the block the caret was just placed in: its marker stays visible for that
+// render only, so Backspace shows `## ` exactly as Typora does instead of deleting hidden text.
+function restore(sel, { reveal = null, focus = true } = {}) {
   if (!sel) return;
   if (sourceMode) {
     if (focus) source.focus();
@@ -109,23 +189,37 @@ function restore(sel, focus = true) {
     return;
   }
   activeId = locate(sel.f).block.id;
+  revealedId = reveal === activeId ? reveal : null;
   updateActive();
   if (focus) editor.focus({ preventScroll: true });
   const s = window.getSelection();
   const [a, ao] = domPoint(sel.a);
   const [f, fo] = domPoint(sel.f);
   s.setBaseAndExtent(a, ao, f, fo);
+  // Chromium normalizes a caret in empty content to a line *after* it, so a split at the end of
+  // a block would land one character late. Give the empty block a BR and re-place the caret.
+  const target = a === f && f.nodeType === Node.ELEMENT_NODE && f.classList.contains('block-content') && !f.firstChild ? f : null;
+  if (target) {
+    target.append(document.createElement('br'));
+    const fresh = document.createRange();
+    fresh.setStart(target, 0);
+    fresh.collapse(true);
+    s.removeAllRanges();
+    s.addRange(fresh);
+  }
 }
 function headingParts(block) {
   if (block.style === 'setext') {
     const lines = block.raw.split('\n');
     const underline = lines.pop() ?? '';
-    return { content: lines.join('\n'), prefix: null, suffix: null, underline };
+    return { content: lines.join('\n'), prefix: null, suffix: null, underline, lead: '' };
   }
+  // 行首缩进与 ATX 标记一样不是正文：它只是原文的排版细节，不该被光标吃进去。
+  const lead = block.raw.match(/^ {0,3}(?=#)/)?.[0] || '';
   const prefix = block.raw.match(/^ {0,3}#{1,6}(?:[ \t]+|$)/)?.[0] || '';
-  const rest = block.raw.slice(prefix.length);
+  const rest = block.raw.slice(lead.length + prefix.length);
   const suffix = rest.match(/[ \t]+#+[ \t]*$/)?.[0] || null;
-  return { content: suffix ? rest.slice(0, -suffix.length) : rest, prefix, suffix, underline: null };
+  return { content: suffix ? rest.slice(0, -suffix.length) : rest, lead, prefix, suffix, underline: null };
 }
 
 function headingLabel(block) {
@@ -136,9 +230,54 @@ function headingLabel(block) {
 const FN_DEF_PREFIX_RE = /^( {0,3}\[\^[^\]\s]{1,64}\]:[ \t]*)([\s\S]*)$/;
 const LINK_DEF_PREFIX_RE = /^( {0,3}\[[^\]\s]{1,64}\]:[ \t]*)(\S+)([\s\S]*)$/;
 const TYPE_CLASS = { footnoteDef: 'footnote-def', linkDef: 'link-def' };
+// Block-level Markdown prefixes (`## `, `- `, `> `, `1. `) render as an atomic decoration on the
+// block itself, never as editable text (issue #52). Kept out of `contenteditable` and therefore
+// out of `.textContent`, so the DOM text of a block is exactly its content and a caret that
+// reaches a block's start is at source offset `lead + prefix`, not zero.
+const BLOCK_PREFIX = {
+  heading: (raw) => raw.match(/^ {0,3}#{1,6}(?:[ \t]+|$)/)?.[0] || '',
+  list: (raw) => raw.match(/^[ \t]*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '',
+  quote: (raw) => raw.match(/^ {0,3}> ?/)?.[0] || '',
+};
+const TASK_PREFIX_RE = /^[ \t]*(?:[-+*]|\d+[.)])[ \t]+\[[ xX]\][ \t]+/;
+function blockPrefix(block) { return BLOCK_PREFIX[block.type]?.(block.raw) || ''; }
+// A task item's `- [ ] ` is a single prefix even though the checkbox replaces it in the DOM.
+function sourcePrefix(block) {
+  if (block.type === 'list' && TASK_PREFIX_RE.test(block.raw)) return block.raw.match(TASK_PREFIX_RE)[0];
+  return blockPrefix(block);
+}
+// Blocks whose leading marker becomes a decoration. A heading or list item that also holds a
+// formula, image, raw HTML or escape keeps the rich source/preview pair: those depend on the
+// markdown-it path, and the edit marks the raw text there anyway.
+function isBlockMarker(block) { return Boolean(blockPrefix(block)) && !needsPreview(block); }
+// The main text flow the caret can enter. A trailing `##` or Setext underline is still a
+// decoration, but it sits *after* the flow, so `end` must include it: otherwise a caret at the
+// end of a heading could never append source past the closing marker.
+function contentNode(block) {
+  const prefix = sourcePrefix(block).length;
+  const raw = block.raw;
+  // Rich blocks render their complete raw Markdown in `.block-source`; no marker is excluded.
+  if (needsPreview(block)) return { start: 0, end: raw.length };
+  if (block.type === 'heading') return { start: prefix, end: raw.length - (headingParts(block).suffix?.length || 0) };
+  if (block.type === 'footnoteDef' && doc?.defNumbers.get(block.id)) return { start: FN_DEF_PREFIX_RE.exec(raw)?.[1].length || 0, end: raw.length };
+  if (block.type === 'linkDef') return { start: LINK_DEF_PREFIX_RE.exec(raw)?.[1].length || 0, end: raw.length };
+  return { start: prefix, end: raw.length };
+}
+// A read-only gutter that shows source markers without owning a caret position or an edit.
+function marker(block) {
+  const text = esc(blockPrefix(block));
+  return {
+    start: `<span class="block-mark" data-mark="${esc(block.type)}" contenteditable="false" aria-hidden="true">${text}</span>`,
+    suffix: (block.type === 'heading' ? `<span class="block-mark" data-mark="heading" contenteditable="false" aria-hidden="true">${esc(headingParts(block).suffix || '')}</span>` : '') +
+      (block.type === 'heading' && block.style === 'setext' ? `<span class="block-mark setext-underline" data-mark="heading" contenteditable="false" aria-hidden="true">\n${esc(headingParts(block).underline || '')}</span>` : ''),
+    // An empty edited block (`#` while still typing) keeps a BR so the caret has somewhere to sit.
+    empty: block.raw === blockPrefix(block),
+  };
+}
 // Footnote numbering is document-wide, so a block whose own text did not change can still
-// need a new number; the reference order is part of the render key.
-function blockKey(block) { return block.type + ':' + block.raw + ':' + doc.order.join(' '); }
+// need a new number; the reference order is part of the render key. The marker flavour is too:
+// a definition gains its number when some other block first references it.
+function blockKey(block) { return block.type + ':' + block.raw + ':' + doc.order.join(' ') + ':' + (blockPrefix(block) || ''); }
 
 function footnoteDefParts(block) {
   const m = FN_DEF_PREFIX_RE.exec(block.raw) || ['', '', block.raw];
@@ -154,18 +293,26 @@ function footnoteBack(number) {
 }
 function decorate(block) {
   const raw = block.raw;
-  if (needsPreview(block)) {
-    let previewRaw = raw, checkbox = '', back = '';
+  if (needsPreview(block) && !isBlockMarker(block)) {
+    let previewRaw = raw, checkbox = '', back = '', head = '';
     if (block.type === 'list') {
       const task = raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]\s/);
       previewRaw = raw.replace(/^\s*(?:[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?/, '');
       if (task) checkbox = `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${task[2].toLowerCase() === 'x'}" aria-label="切换任务完成状态" data-task="${block.id}"></button>`;
+      else head = marker(block).start;
     }
-    if (block.type === 'heading') previewRaw = headingParts(block).content;
+    if (block.type === 'heading') {
+      const parts = headingParts(block);
+      previewRaw = parts.content;
+      head = marker(block).start + marker(block).suffix;
+    }
     if (block.type === 'footnoteDef') { const def = footnoteDefParts(block); previewRaw = def.body; back = footnoteBack(def.number); }
     if (block.type === 'quote') previewRaw = raw.replace(/^ {0,3}>[ \t]?/gm, '');
     const highlight = !(block.type === 'code' && block.id === activeId);
-    return `${checkbox}<span class="block-source">${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${back}${previewMarkdown(previewRaw, block.type, { highlight, doc })}</div>`;
+    // The source only shows while editing. A typed character hides it again, so a block whose
+    // caret merely passed through never stays stuck in source view.
+    const live = block.id === activeId && revealedId === activeId;
+    return `${checkbox}<span class="block-source"${live ? ' data-live=""' : ''}>${esc(raw)}</span><div class="block-preview task-body" contenteditable="false">${head}${back}${previewMarkdown(previewRaw, block.type, { highlight, doc })}</div>`;
   }
   if (block.type === 'footnoteDef') {
     const { prefix, body, number } = footnoteDefParts(block);
@@ -177,25 +324,29 @@ function decorate(block) {
     const safe = /^(?:https?:|mailto:)/i.test(url);
     return esc(prefix) + (safe ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>` : esc(url)) + esc(suffix);
   }
-  if (block.type === 'heading') {
-    const { content, prefix, suffix, underline } = headingParts(block);
-    return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') +
-      renderInline(content, doc) +
-      (suffix ? `<span class="syntax">${esc(suffix)}</span>` : '') +
-      (underline !== null ? `<span class="syntax setext-underline">\n${esc(underline)}</span>` : '');
+  if (isBlockMarker(block) || block.style === 'setext') {
+    // A Setext underline is the same kind of decoration as `## `: the heading text is the content
+    // and the `===` line sits below it, out of `contenteditable` (issue #52).
+    const mark = marker(block);
+    const body = block.style === 'setext' ? headingParts(block).content
+      : block.type === 'heading' ? headingParts(block).content
+      : raw.slice(blockPrefix(block).length);
+    if (block.type === 'list') {
+      // A task checkbox replaces the `- [ ] ` decoration: three markers in one line read as noise,
+      // and one clickable box says the same thing as the checkbox paragraph in Typora.
+      const task = body.match(/^\[([ xX])\][ \t]+/);
+      if (task) {
+        const checked = task[1].toLowerCase() === 'x';
+        return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="task-body">${renderInline(body.slice(task[0].length), doc)}</span>`;
+      }
+    }
+    const prefix = block.style === 'setext' ? '' : mark.start;
+    const content = block.style !== 'setext' && mark.empty ? '<br>' : renderInline(body, doc);
+    return prefix + `<span class="block-content">${content}</span>` + mark.suffix;
   }
-  let prefix = '';
-  if (block.type === 'list') prefix = raw.match(/^\s*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '';
-  if (block.type === 'quote') prefix = raw.match(/^ {0,3}> ?/)?.[0] || '';
-  const task = block.type === 'list' && raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[([ xX])\]\s/);
-  if (task) {
-    prefix = task[0];
-    const checked = task[2].toLowerCase() === 'x';
-    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length), doc)}</span>`;
-  }
-  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length), doc);
+  return `<span class="block-content">${renderInline(raw, doc)}</span>`;
 }
-function render(sel = null) {
+function render(sel = null, options = {}) {
   doc = buildDocContext(blocks);
   const existing = new Map([...editor.children].map((n) => [n.dataset.id, n]));
   const kept = new Set();
@@ -205,7 +356,7 @@ function render(sel = null) {
     kept.add(node);
     const key = blockKey(block);
     if (node._key !== key) {
-      node.innerHTML = block.raw ? decorate(block) : '<br>';
+      node.innerHTML = block.raw ? decorate(block) : '<span class="block-content"><br></span>';
       node._key = key;
       node._stale = block.type === 'code' && block.id === activeId;
     }
@@ -214,7 +365,7 @@ function render(sel = null) {
     node.style.setProperty('--indent', `${Math.min(indent / 2, 16) * 22}px`);
     const task = block.type === 'list' && /^\s*(?:[-+*]|\d+[.)])\s+\[[ xX]\]\s/.test(block.raw);
     node.classList.toggle('task', Boolean(task));
-    node.classList.toggle('done', Boolean(task && /^\s*(?:[-+*]|\d+[.)])\s+\[[xX]\]/.test(block.raw)));
+    node.classList.toggle('done', Boolean(task && /^\s*(?:[-+*]|\d+[.)])\s+[xX]/.test(block.raw)));
     node.dataset.level = block.level || '';
     const number = block.raw.match(/^\s*(\d+)[.)]\s/);
     node.dataset.ordered = String(Boolean(number));
@@ -224,7 +375,7 @@ function render(sel = null) {
   [...editor.children].forEach((n) => { if (!kept.has(n)) n.remove(); });
   enhanceImages();
   updateUI();
-  if (sel) restore(sel);
+  if (sel) restore(sel, { reveal: options.reveal });
 }
 let lastActiveId = null;
 
@@ -344,10 +495,32 @@ function retryImage(box) {
 
 function updateActive() {
   const previous = lastActiveId;
-  [...editor.children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
+  [...editor.children].forEach((el) => {
+    el.classList.toggle('active', el.dataset.id === activeId);
+    el.classList.toggle('mark-revealed', el.dataset.id === revealedId);
+  });
   [...$('outline').children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
   if (previous && previous !== activeId) refreshCodePreview(previous);
   lastActiveId = activeId;
+  // 行内标记只在光标真正跨过它时出现：整段激活就全显示会让 `**`、链接和脚注全冒出来。
+  const node = editor.querySelector(`[data-id="${activeId}"]`);
+  if (!node || !beforeSelection) return;
+  const block = blocks.find((b) => b.id === activeId);
+  if (!block) return;
+  const bounds = contentNode(block);
+  const at = Math.min(Math.max(beforeSelection.f, bounds.start), bounds.end);
+  const prior = [...editor.children].slice(0, [...editor.children].indexOf(node))
+    .reduce((n, b) => n + blockLength(b) + 1, 0);
+  // Walk the editable run and map each marker's real position. `range.toString().length` alone
+  // would report the same length for every `**` and reveal markers far from the caret.
+  const run = node.querySelector('.block-content') || node;
+  for (const span of run.querySelectorAll('.syntax')) {
+    const before = document.createRange();
+    before.selectNodeContents(run);
+    before.setStart(span, 0);
+    const start = prior + bounds.start + before.toString().length;
+    span.classList.toggle('near', at >= start - 2 && at <= start + span.textContent.length + 2);
+  }
 }
 function updateUI() {
   const value = text();
@@ -414,7 +587,7 @@ function syncAIContext(kind) {
     resetAIContext();
   }
 }
-function apply(value, sel, kind = 'command', addHistory = true) {
+function apply(value, sel, kind = 'command', addHistory = true, options = {}) {
   const switched = kind === 'open' || kind === 'native' || kind === 'new';
   if (switched) syncAIContext(kind);
   clearTimeout(renderTimer);
@@ -423,13 +596,13 @@ function apply(value, sel, kind = 'command', addHistory = true) {
   currentText = text();
   // 内容变化后标记分析结果过期；切换文档时已在 resetAIContext 中清空。
   if (!switched) markAIDocumentChanged(currentText);
-  if (sourceMode) { source.value = currentText; resizeSource(); updateUI(); if (sel) restore(sel); }
-  else render(sel);
+  if (sourceMode) { source.value = currentText; resizeSource(); updateUI(); if (sel) restore(sel, options); }
+  else render(sel, options);
   persist();
 }
-function replace(start, end, value, cursor = start + value.length, kind = 'command') {
+function replace(start, end, value, cursor = start + value.length, kind = 'command', options = {}) {
   const old = text();
-  apply(old.slice(0, start) + value + old.slice(end), { a: cursor, f: cursor }, kind);
+  apply(old.slice(0, start) + value + old.slice(end), { a: cursor, f: cursor }, kind, true, options);
 }
 function range() {
   const sel = selection() || beforeSelection || { a: text().length, f: text().length };
@@ -513,13 +686,27 @@ function format(command) {
 }
 function enter(soft = false) {
   const s = range();
-  const { block, offset } = locate(s.start);
+  const { block, offset, index } = locate(s.start);
+  const atEnd = !soft && s.start === s.end && offset === block.raw.length;
+  if (atEnd && block.type === 'heading') {
+    // The marker is a decoration, so the DOM has no `## ` for the native split to keep in
+    // front of the new line. Keep the heading intact and start a paragraph after it, unless
+    // the very next block is already blank (a file's trailing newline would add another).
+    const next = blocks[index + 1];
+    if (next && next.type === 'blank') return;
+    apply(text().slice(0, s.start) + '\n\n' + text().slice(s.start), { a: s.start + 2, f: s.start + 2 });
+    return;
+  }
   if (!soft && s.start === s.end && block.style === 'setext') {
     const underline = block.raw.split('\n').pop() ?? '';
     const contentLength = block.raw.length - underline.length - 1;
     if (offset >= contentLength) {
       const after = s.start - offset + block.raw.length;
-      replace(after, after, '\n\n');
+      const next = blocks[index + 1];
+      if (next && next.type === 'blank') return;
+      // The caret belongs at the start of the new paragraph, after both newlines. With no
+      // trailing blank (we returned early otherwise) that is the very end of the document.
+      apply(text().slice(0, after) + '\n\n' + text().slice(after), { a: after + 2, f: after + 2 });
       return;
     }
   }
@@ -553,6 +740,18 @@ function enter(soft = false) {
 }
 function resizeSource() { source.style.height = 'auto'; source.style.height = `${Math.max(source.scrollHeight, 350)}px`; }
 
+// Line-start Backspace on a block whose marker is a decoration cannot delete a character that
+// is not in the text flow, so it becomes the format operation it looks like: strip the marker
+// and keep the caret in the content.
+function stripBlockMark(block) {
+  const s = range();
+  const p = locate(s.start);
+  if (s.start !== s.end || p.block.id !== block.id || p.offset !== contentNode(block).start) return;
+  const prefix = sourcePrefix(block);
+  const start = s.start - p.offset;
+  replace(start, start + prefix.length, '', s.start - prefix.length, 'typing', { reveal: p.block.id });
+}
+
 editor.addEventListener('beforeinput', (event) => {
   beforeSelection = selection();
   if (composing || event.isComposing) return;
@@ -561,18 +760,24 @@ editor.addEventListener('beforeinput', (event) => {
   else if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { event.preventDefault(); undo(event.inputType === 'historyRedo'); }
   else if (s.start !== s.end && ['insertText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut'].includes(event.inputType)) {
     event.preventDefault(); replace(s.start, s.end, event.inputType === 'insertText' ? event.data || '' : '', undefined, 'typing');
-  } else if (event.inputType === 'deleteContentBackward' || event.inputType === 'deleteContentForward') {
+  } else if (event.inputType === 'insertText' && s.start === s.end) {
+    // `point()` clamps a marker-edge selection (select-all) to the content edge, so the source
+    // range reads as collapsed while the DOM selection is not. Replace the whole source then.
+    const dom = window.getSelection();
+    if (dom && !dom.isCollapsed && dom.toString()) { event.preventDefault(); replace(0, text().length, event.data || '', undefined, 'typing'); }
+  } else if (event.inputType === 'deleteContentBackward' && s.start === s.end) {
     const p = locate(s.start);
-    if ((event.inputType === 'deleteContentBackward' && p.offset === 0 && s.start > 0) || (event.inputType === 'deleteContentForward' && p.offset === p.block.raw.length && s.start < text().length)) {
-      event.preventDefault();
-      const backward = event.inputType === 'deleteContentBackward';
-      replace(backward ? s.start - 1 : s.start, backward ? s.start : s.start + 1, '', undefined, 'typing');
-    }
+    if (isBlockMarker(p.block) && p.offset === contentNode(p.block).start) { event.preventDefault(); stripBlockMark(p.block); return; }
+    // Only a block that has nothing left to strip can merge with the previous one.
+    if (p.offset === 0 && s.start > 0) { event.preventDefault(); replace(s.start - 1, s.start, '', undefined, 'typing'); }
+  } else if (event.inputType === 'deleteContentForward') {
+    const p = locate(s.start);
+    if (p.offset === p.block.raw.length && s.start < text().length) { event.preventDefault(); replace(s.start, s.start + 1, '', undefined, 'typing'); }
   }
 });
 function storeDOM() {
   const sel = selection();
-  const raw = [...editor.children].map(readBlock).join('\n');
+  const raw = [...editor.children].map((node) => withMarkers(node, readBlock(node))).join('\n');
   if (raw !== currentText) {
     remember(beforeSelection || sel, 'typing');
     blocks = parseBlocks(raw, blocks);
@@ -580,6 +785,7 @@ function storeDOM() {
     markAIDocumentChanged(currentText);
   }
   if (sel) activeId = locate(sel.f).block.id;
+  revealedId = null;
   render(sel);
   persist();
 }
@@ -721,7 +927,17 @@ editor.addEventListener('keydown', (event) => {
   if (composing || event.isComposing || event.keyCode === 229) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
     event.preventDefault();
-    restore({ a: 0, f: text().length });
+    // Select the whole source, markers included: `restore` clamps to the content edge, so a
+    // marker block would keep its `# ` and survive a typed replacement.
+    const first = editor.firstElementChild;
+    const last = editor.lastElementChild;
+    if (first && last) {
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      const s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(range);
+    }
     return;
   }
   if (event.key === 'Tab') {
@@ -746,9 +962,12 @@ document.addEventListener('selectionchange', () => {
   if (!s) return;
   beforeSelection = s;
   activeId = locate(s.f).block.id;
+  // 光标真的动了（方向键跳过标记、点击别处）就收回 Backspace 临时显示的标记。
+  if (revealedId) revealedId = null;
   updateActive();
 });
 editor.addEventListener('blur', () => {
+  revealedId = null;
   if (!composing) { activeId = null; updateActive(); }
 });
 document.querySelectorAll('[data-command]').forEach((button) => {
@@ -1085,7 +1304,7 @@ async function exportPDF() {
 function flushDraft() {
   if (desktop) return;
   clearTimeout(persistTimer);
-  const value = composing ? (sourceMode ? source.value : [...editor.children].map(readBlock).join('\n')) : text();
+  const value = composing ? (sourceMode ? source.value : [...editor.children].map((node) => withMarkers(node, readBlock(node))).join('\n')) : text();
   try { localStorage.setItem(STORAGE, JSON.stringify({ text: value, filename, savedText })); }
   catch { $('status').textContent = '草稿保存失败，请导出 .md'; }
 }
