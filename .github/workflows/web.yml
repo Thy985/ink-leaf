@@ -30,7 +30,23 @@ jobs:
       - run: npm ci
       - run: npm run build:web
       - run: python3 -m pip install -r tests/web/requirements.txt
-      - run: python3 -m playwright install --with-deps chromium
+      # 依赖安装偶发失败：ubuntu-latest 镜像升级后，apt 源（例如 packages.microsoft.com
+      # 尚未为新发行版生成 InRelease）会瞬时失效，而 playwright 的 --with-deps 依赖 apt，
+      # 表现为整个 job 红掉。这里重试 3 次，把「跑不起来」和「真的有问题」区分开。
+      # 不改用 --without-deps：那会让 headless Chromium 缺系统库，变成另一种假红。
+      - name: 安装 Chromium
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            echo "== playwright install (attempt $attempt/3) =="
+            if python3 -m playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying in 15s"
+            sleep 15
+          done
+          echo "playwright install failed after 3 attempts"
+          exit 1
 
       # 测试脚本自身会探测 4173 端口，探测不到才会另起服务；
       # 这里先起一个，保证 smoke / advanced / controls 这类不自带服务器的用例能跑。

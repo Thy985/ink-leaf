@@ -134,9 +134,17 @@ async function callProvider(messages, options = {}) {
 
 const CONTEXT_LIMITS = {
   selection: 8000,
+  // document 同时是「整篇内联还是走检索」的分界点（见 askDocument）。
+  // 前端不硬编码这个值，而是经 ai:limits 通道取，避免两边漂移导致
+  // 「提示说的发送范围」与「实际发送范围」不一致——那等于对用户撒谎。
   document: 32000,
   folder: 64000,
 };
+
+// 供渲染层查询上下文阈值，用于在发送前如实提示本次的发送范围。
+function getContextLimits() {
+  return { ...CONTEXT_LIMITS };
+}
 
 function truncateText(text, limit) {
   if (typeof text !== 'string' || text.length <= limit) return text;
@@ -295,17 +303,51 @@ async function runSelectionAction(actionKey, selection, document) {
   return createProposal(action.label, selection, result.trim(), context.notice, actionKey);
 }
 
-async function askDocument(question, document, history) {
+async function askDocument(question, document, history, options = {}) {
   if (!question || !question.trim()) throw new Error('请输入问题');
   if (!document?.text) throw new Error('当前没有可问答的文档');
 
-  const context = buildDocumentContext(document);
-  const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...sanitizeHistory(history),
-    { role: 'user', content: `文档内容：\n${context.document}\n\n用户问题：${question}\n\n请基于文档内容回答用户问题；如果这是对前文对话的追问，请结合对话历史回答。回答中引用关键段落时，请使用「引用：」前缀标注原文。` },
-  ];
-  return await callProvider(messages, { temperature: 0.2 });
+  // 短文档仍整篇发给模型：一次往返、无需工具调用，比多轮检索更便宜也更准。
+  // 只有超过 CONTEXT_LIMITS.document 时才改用工具按需检索——
+  // 否则整篇截断会悄悄丢掉模型本该看到的段落，而它无从察觉。
+  if (document.text.length <= CONTEXT_LIMITS.document) {
+    const context = buildDocumentContext(document);
+    const messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...sanitizeHistory(history),
+      { role: 'user', content: `文档内容：\n${context.document}\n\n用户问题：${question}\n\n请基于文档内容回答用户问题；如果这是对前文对话的追问，请结合对话历史回答。回答中引用关键段落时，请使用「引用：」前缀标注原文。` },
+    ];
+    // 短文档整篇随消息发送，模型确实看到了文档内容，故 retrieved 为 true。
+    return { answer: await callProvider(messages, { temperature: 0.2 }), trace: [], retrieved: true };
+  }
+
+  // 长文档：交给 Agent 用工具检索，而不是把截断后的整篇塞给它。
+  // 检索范围严格限定在「当前这篇文档」——不碰其他已导入文件夹，
+  // 这样问答不会把用户没提到的文档内容发出去。
+  const result = await runAgent({
+    system: SYSTEM_PROMPT,
+    temperature: 0.2,
+    messages: [
+      ...sanitizeHistory(history),
+      { role: 'user', content: `用户问题：${question}\n\n当前文档较长（${document.text.length} 字符），请调用 search_document 工具检索与问题相关的段落，再基于命中的内容回答。回答中引用关键段落时，请使用「引用：」前缀标注原文。` },
+    ],
+    document,
+  });
+
+  // 模型可能一次工具都不调用就直接作答（小模型或兼容网关常见）。
+  // 此时它并没有读过文档，答案只能来自猜测；必须如实告诉用户，
+  // 不能把一条凭空生成的回答当成「基于文档的回答」呈现。
+  const retrieved = result.trace.some((step) => step.outcome === 'ok');
+  if (!retrieved && result.text.trim()) {
+    return {
+      answer: result.text,
+      trace: result.trace,
+      truncatedByStepLimit: result.truncatedByStepLimit,
+      retrieved: false,
+      notice: '本次回答未检索文档内容，可能是模型自行推测，请谨慎采信。',
+    };
+  }
+  return { answer: result.text, trace: result.trace, truncatedByStepLimit: result.truncatedByStepLimit, retrieved };
 }
 
 async function askMultiDocument(question, documents) {
@@ -324,11 +366,29 @@ async function reviewDocument(instruction, document) {
   if (!instruction || typeof instruction !== 'string' || !instruction.trim()) throw new Error('请输入修改要求');
   if (!document?.text) throw new Error('当前没有可修改的文档');
 
+  // 要模型直接给结构化条目，UI 才能逐条展示与定位。
+  // 但兼容网关对 response_format 支持不一致，所以用提示词约束 + 宽容解析，
+  // 解析不出来时退化成整段文本——宁可少一个结构化列表，也不能让审阅功能整个失败。
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: `请对以下文档提出修改建议。要求：${instruction}\n\n请逐条列出修改建议，每条包含：位置描述、原文片段、建议修改、修改理由。\n\n文档内容：\n${truncateText(document.text, CONTEXT_LIMITS.document)}` },
+    { role: 'user', content: `请对以下文档提出修改建议。要求：${instruction}
+
+请只输出一个 JSON 数组，不要包任何解释文字或代码围栏。数组每个元素是一个对象，字段如下：
+- "position"：位置描述（如「第 3 段」「## 标题下」）
+- "original"：原文片段（必须能从文档中原样找到）
+- "suggested"：建议修改后的文字
+- "reason"：修改理由
+
+如果文档不需要修改，输出空数组 []。
+
+文档内容：
+${truncateText(document.text, CONTEXT_LIMITS.document)}` },
   ];
-  return await callProvider(messages, { temperature: 0.3 });
+  const raw = await callProvider(messages, { temperature: 0.3 });
+  const { parseReviewItems } = await import('./ai/schema.mjs');
+  const items = parseReviewItems(raw);
+  // 结构化成功时 items 有值；否则把原文交给 UI 当纯文本展示。
+  return items ? { items } : { text: raw.trim() };
 }
 
 // ---------------------------------------------------------------------------
@@ -460,14 +520,16 @@ module.exports = {
   SYSTEM_PROMPT,
   ACTIONS,
   CONTEXT_LIMITS,
+  getContextLimits,
   // H0 Harness：带工具的一轮问答。工具层只读，且只能访问已导入文件夹。
   // 通过动态 import 加载，保持 ai.cjs 在无 Electron/SDK 环境下仍可被单元测试直接 require。
   runAgent,
   createTools,
 };
 
-// 便捷包装：给定已导入文件夹列表，跑一轮可调用工具的问答。
-// 调用方（main.cjs）传入 sessionState.folders 的路径数组即可。
+// 便捷包装：跑一轮可调用工具的问答。
+// options.folders：已导入文件夹的路径数组（session.json 里需先 map 成 path 字符串）。
+// options.document：可选的当前文档 { text, filename }，启用 search_document 工具。
 async function runAgent(options = {}) {
   const [{ runAgent: run }, { createTools: makeTools }, { createProvider }] = await Promise.all([
     import('./ai/harness.mjs'),
@@ -477,7 +539,7 @@ async function runAgent(options = {}) {
   const config = await readProviderConfig();
   if (!config.apiKey) throw new Error('尚未配置 AI 服务 API Key');
   if (!config.baseUrl) throw new Error('尚未配置 AI 服务地址');
-  const { registry } = makeTools({ folders: options.folders || [] });
+  const { registry } = makeTools({ folders: options.folders || [], document: options.document || null });
   const provider = createProvider({ baseUrl: config.baseUrl, apiKey: config.apiKey, name: config.name, timeoutMs: options.timeoutMs });
   try {
     return await run({
@@ -495,7 +557,7 @@ async function runAgent(options = {}) {
 }
 
 // 供 main.cjs 在不需要跑模型时直接拿到工具注册表（例如 MCP 服务器复用同一套工具）。
-async function createTools({ folders = [] } = {}) {
+async function createTools({ folders = [], document = null } = {}) {
   const { createTools: makeTools } = await import('./ai/tools.mjs');
-  return makeTools({ folders });
+  return makeTools({ folders, document });
 }

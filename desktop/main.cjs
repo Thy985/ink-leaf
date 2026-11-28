@@ -529,8 +529,9 @@ app.whenReady().then(async () => {
     if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
     try {
       if (typeof question !== 'string') throw new Error('无效的问题');
-      const answer = await ai.askDocument(question, document, Array.isArray(history) ? history : []);
-      return { ok: true, answer };
+      const result = await ai.askDocument(question, document, Array.isArray(history) ? history : []);
+      // trace 让用户看到 AI 到底检索了哪些步骤；不含文档正文，可安全渲染。
+      return { ok: true, answer: result.answer, trace: result.trace || [], truncated: !!result.truncatedByStepLimit };
     } catch (error) {
       return { ok: false, message: error.message || 'AI 问答失败' };
     }
@@ -546,6 +547,8 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('ai:provider:status', async (event) => { if (!isTrusted(event)) return { ok: false }; return ai.getProviderStatus(); });
+  // 上下文阈值由主进程下发，前端不再硬编码，避免提示与实际发送范围漂移。
+  ipcMain.handle('ai:limits', async (event) => { if (!isTrusted(event)) return { ok: false }; return { ok: true, limits: ai.getContextLimits() }; });
   ipcMain.handle('ai:provider:save', async (event, config) => {
     if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
     try { return { ok: true, status: await ai.saveProviderConfig(config || {}) }; }
