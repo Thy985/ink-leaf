@@ -50,6 +50,24 @@ function validAiDocument(value) {
   if (Buffer.byteLength(value.text, 'utf8') > AI_DOCUMENT_MAX_BYTES) throw new Error('文档内容超过 AI 处理限制');
   return { text: value.text, filename: value.filename.slice(0, 200) };
 }
+// 链接查询：只允许 title / filename / broken 三个字段，字符串有长度上限。
+// 范围本身由主进程按已导入文件夹固定，这里只挡住形状不对的请求。
+function validLinkQuery(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('无效的链接查询参数');
+  const out = {};
+  for (const key of ['title', 'filename']) {
+    const raw = value[key];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== 'string' || raw.length > 200) throw new Error('无效的链接查询参数');
+    out[key] = raw;
+  }
+  if (value.broken !== undefined) {
+    if (typeof value.broken !== 'boolean') throw new Error('无效的链接查询参数');
+    out.broken = value.broken;
+  }
+  return out;
+}
 function validSearchQuery(value) {
   if (typeof value !== 'string' || !value.trim()) throw new Error('请输入搜索关键词');
   if (value.length > 200) throw new Error('搜索关键词过长');
@@ -127,6 +145,10 @@ contextBridge.exposeInMainWorld('desktop', Object.freeze({
     summarize(document) { return ipcRenderer.invoke('ai:summarize', validAiDocument(document)); },
     providerStatus() { return ipcRenderer.invoke('ai:provider:status'); },
     limits() { return ipcRenderer.invoke('ai:limits'); },
+    // 工作区（H2）：范围固定为已导入文件夹，渲染层不能指定路径。
+    workspace() { return ipcRenderer.invoke('ai:workspace'); },
+    refreshWorkspace() { return ipcRenderer.invoke('ai:workspace:refresh'); },
+    links(query) { return ipcRenderer.invoke('ai:links', validLinkQuery(query)); },
     saveProvider(config) { return ipcRenderer.invoke('ai:provider:save', validProviderConfig(config)); },
     clearProvider() { return ipcRenderer.invoke('ai:provider:clear'); },
   }),

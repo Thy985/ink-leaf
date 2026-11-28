@@ -19,8 +19,15 @@
 <div class="workspace">
 <button id="outline-scrim" aria-label="关闭文档大纲" tabindex="-1"></button>
 <aside class="sidebar" aria-label="文档大纲侧栏">
-<div class="sidebar-heading"><span id="panel-tabs" role="tablist" aria-label="侧栏面板"><button id="panel-outline" class="panel-tab" aria-pressed="true">文档大纲 <span>OUTLINE</span></button><button id="panel-folders" class="panel-tab" aria-pressed="false">文件夹 <span>FOLDERS</span></button></span></div>
+<div class="sidebar-heading"><span id="panel-tabs" role="tablist" aria-label="侧栏面板"><button id="panel-outline" class="panel-tab" aria-pressed="true">文档大纲 <span>OUTLINE</span></button><button id="panel-folders" class="panel-tab" aria-pressed="false">文件夹 <span>FOLDERS</span></button><button id="panel-workspace" class="panel-tab" aria-pressed="false">工作区 <span>WORKSPACE</span></button></span></div>
 <nav id="outline" aria-label="文档大纲"></nav>
+<section id="workspace-panel" aria-label="工作区" hidden>
+<div class="workspace-bar"><span id="workspace-summary" class="workspace-summary">尚未建立索引</span><button id="workspace-refresh" title="重新扫描已导入文件夹并重建索引">重建索引</button></div>
+<div id="workspace-links" class="workspace-links" aria-live="polite"></div>
+<details id="workspace-broken" class="workspace-section" hidden><summary>死链 <span id="workspace-broken-count"></span></summary><ul id="workspace-broken-list"></ul></details>
+<details id="workspace-docs" class="workspace-section" hidden><summary>文档 <span id="workspace-docs-count"></span></summary><ul id="workspace-docs-list"></ul></details>
+<p class="folder-empty" id="workspace-empty" hidden>还没有导入文件夹。先到「文件夹」面板导入，工作区会基于已导入的文件夹建立索引（只在内存中，不写入磁盘）。</p>
+</section>
 <section id="folder-panel" aria-label="导入的文件夹" hidden>
 <div class="folder-bar"><button id="folder-add" title="选择一个本地文件夹导入（只读扫描，不改动磁盘内容）">导入文件夹</button><button id="folder-new" title="在当前文件夹根目录新建 .md">新建</button><button id="folder-refresh" title="重新扫描当前文件夹" disabled>刷新</button></div>
 <div id="folder-chips" class="folder-chips" hidden></div>

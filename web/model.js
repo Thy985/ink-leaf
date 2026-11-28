@@ -170,6 +170,64 @@ function scannableText(block){
   return stripInlineDollarMath(scannable);
 }
 
+// ---------------------------------------------------------------------------
+// Wikilinks（[[标题]]）
+// ---------------------------------------------------------------------------
+// 双向链接是墨页「知识组织」的基础语法。解析放在这里而不是 desktop/ai/，
+// 是因为它是文档语法的一部分：渲染、反向链接、Agent 工具必须看同一个结果，
+// 另写一份解析器迟早会与渲染不一致（AGENTS.md 单一事实来源）。
+//
+// 只认 [[标题]] 与 [[标题|显示文字]]：
+// - 空标题、含换行的、超过 200 字符的不算链接（多半是误写而非真实引用）；
+// - 代码块/行内代码/公式/URL 里的 [[...]] 不算（它们只是字符串内容）。
+// [[标题]] 与 [[标题|显示文字]] 都认。| 之后是显示文字，不参与目标匹配。
+//
+// 用**单趟**正则同时匹配两种形式，且两段的字符类都排除 |：
+// 早先分两个正则再 replace 抹除的做法有两个后果（复审 F3）——
+// ① 别名段没排除 |，长度上限可被「|...」撑破，病态输入会触发平方级回溯；
+// ② replace 会改变字符串长度，raw 与原文偏移不再可靠。
+const WIKILINK_RE=/\[\[([^\[\]\n|]{1,200})(?:\|([^\[\]\n|]{0,200}))?\]\]/g;
+
+function normalizeWikiTarget(title){
+  // 链接目标是标题而不是路径：统一去首尾空白、压掉内部连续空白，
+  // 并与文件名比对时忽略扩展名与大小写（见 caller）。
+  return String(title||'').trim().replace(/\s+/g,' ');
+}
+
+// 从纯文本里取所有 wikilink。传入的 text 应当已经过 scannableText 处理，
+// 否则代码块里的 [[...]] 会被误计入。
+export function extractWikilinks(text){
+  const out=[];
+  const source=String(text||'');
+  const seen=new Set();
+  for(const match of source.matchAll(WIKILINK_RE)){
+    const target=normalizeWikiTarget(match[1]);
+    if(!target)continue;
+    const alias=match[2]?String(match[2]).trim():'';
+    // 同一目标只保留一条：反向链接关心「谁指向了它」，重复引用不改变关系。
+    // 但同目标的**不同别名**要分开保留，否则用户看不到另一种叫法（复审 F10）。
+    const key=`${target.toLowerCase()}\u0000${alias}`;
+    if(seen.has(key))continue;
+    seen.add(key);
+    out.push({target, alias, raw:match[0]});
+  }
+  return out;
+}
+
+// 从文档块里取 wikilink：逐块用 scannableText 去掉代码/公式/URL 后再匹配。
+export function documentWikilinks(blocks){
+  const list=Array.isArray(blocks)?blocks:[];
+  const all=[];
+  for(const block of list){
+    const text=scannableText(block);
+    if(!text||!text.includes('[['))continue;
+    for(const link of extractWikilinks(text)){
+      all.push({...link, blockId:block.id??null});
+    }
+  }
+  return all;
+}
+
 export function buildDocContext(blocks){
   const list=Array.isArray(blocks)?blocks:[], footnotes=new Map(), links=new Map(), order=[], duplicateFootnotes=new Set(), duplicateLinks=new Set();
   for(const block of list){

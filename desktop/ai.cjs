@@ -525,6 +525,10 @@ module.exports = {
   // 通过动态 import 加载，保持 ai.cjs 在无 Electron/SDK 环境下仍可被单元测试直接 require。
   runAgent,
   createTools,
+  // H2 工作区：本地索引查询，不经过模型。
+  describeWorkspace,
+  documentLinks,
+  invalidateWorkspace,
 };
 
 // 便捷包装：跑一轮可调用工具的问答。
@@ -560,4 +564,64 @@ async function runAgent(options = {}) {
 async function createTools({ folders = [], document = null } = {}) {
   const { createTools: makeTools } = await import('./ai/tools.mjs');
   return makeTools({ folders, document });
+}
+
+// ---------------------------------------------------------------------------
+// 工作区（H2）
+// ---------------------------------------------------------------------------
+// 侧栏要能展示工作区结构与反向链接，这些查询不经过模型，直接在本地索引上完成。
+// 索引按「文件夹集合」缓存，另有显式的失效入口。
+//
+// 只认文件夹集合是不够的（复审 F4）：用户「移除 → 重建目录 → 重新导入同一路径」后，
+// 集合没变但磁盘内容全变了。所以 main.cjs 在文件夹增删与保存文件时调用
+// invalidateWorkspace()，清空缓存强制重建。
+//
+// 缓存的是 **Promise** 而不是结果（复审 F7）：侧栏打开面板时会并发发起
+// workspace / links / broken 三个查询，缓存结果的话三者同时 miss，会把整盘扫三遍。
+let workspaceCache = { key: '', promise: null };
+
+function getWorkspaceIndex(folders = []) {
+  const key = JSON.stringify((Array.isArray(folders) ? folders : []).map((f) => (f && typeof f === 'object' ? f.path : f)));
+  if (workspaceCache.promise && workspaceCache.key === key) return workspaceCache.promise;
+  const promise = import('./ai/workspace.mjs')
+    .then(({ buildWorkspaceIndex }) => buildWorkspaceIndex({ roots: folders }))
+    // 建索引失败时不要把失败的 Promise 永久缓存住，否则之后永远拿不到结果。
+    .catch((error) => { if (workspaceCache.promise === promise) workspaceCache = { key: '', promise: null }; throw error; });
+  workspaceCache = { key, promise };
+  return promise;
+}
+
+// 让缓存失效：文件夹增删、保存文件、或用户点「重建索引」时调用。
+function invalidateWorkspace() {
+  workspaceCache = { key: '', promise: null };
+}
+
+// 工作区概览：文件夹 + 文档清单（不含正文）。
+async function describeWorkspace(folders = []) {
+  const { describeWorkspace: describe, findBrokenLinks } = await import('./ai/workspace.mjs');
+  const index = await getWorkspaceIndex(folders);
+  // 侧栏渲染需要完整清单（不进模型上下文），故传 null 关掉工具侧的体积上限。
+  const desc = describe(index, { limit: null });
+  return {
+    ...desc,
+    // 链接统计一并返回，侧栏可以直接显示「N 条链接 / M 条死链」。
+    linkCount: countLinks(index),
+    brokenCount: findBrokenLinks(index).length,
+  };
+}
+
+// 某篇文档的反向链接。title 缺省时用 filename 推断。
+async function documentLinks(folders = [], { title, filename, broken = false } = {}) {
+  const { findBacklinks, findBrokenLinks } = await import('./ai/workspace.mjs');
+  const index = await getWorkspaceIndex(folders);
+  if (broken) return { broken: findBrokenLinks(index) };
+  const target = title || (typeof filename === 'string' ? filename.replace(/\.(md|markdown|txt)$/i, '') : '');
+  if (!target) return { title: '', targets: [], backlinks: [] };
+  return findBacklinks(index, target);
+}
+
+function countLinks(index) {
+  let total = 0;
+  for (const list of index.backlinks.values()) total += list.length;
+  return total;
 }

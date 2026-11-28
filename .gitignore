@@ -42,3 +42,6 @@ android/app/src/main/assets/www/
 .commit-msg.tmp
 # PR 描述草稿
 .pr-body.tmp
+
+# PR 描述草稿
+.pr-body.tmp

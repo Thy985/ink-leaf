@@ -98,6 +98,27 @@ export function truncateText(text, limit) {
   return cut;
 }
 
+// list_workspace：列出工作区结构。不带参数——范围由调用方注入的已导入文件夹决定，
+// 模型无法通过参数扩大读取范围。
+export const LIST_WORKSPACE_SCHEMA = {
+  type: 'object',
+  properties: {},
+  required: [],
+  additionalProperties: false,
+};
+
+// find_links：查询某个标题的反向链接，或列出全部死链。
+// title 与 broken 二选一；两者都不给时返回死链清单更有用（用户最常见的需求是找拼错的链接）。
+export const FIND_LINKS_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string', minLength: 1, maxLength: 200, description: '要查询反向链接的文档标题（不带扩展名）' },
+    broken: { type: 'boolean', description: '改为列出指向不存在文档的链接' },
+  },
+  required: [],
+  additionalProperties: false,
+};
+
 // 单个 trace 步骤的形状。刻意不含文档正文：trace 会进日志与 UI，正文不应外泄。
 export const TRACE_STEP_SHAPE = Object.freeze({
   stepIndex: 'number',

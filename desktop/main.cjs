@@ -154,6 +154,9 @@ async function canonicalizeFolders(session) {
 // Writes are serialized through the recovery queue; every caller awaits the result, so
 // read-modify-write cycles never interleave.
 function updateSession(patch) {
+  // 文件夹集合变化会让工作区索引整体过期（用户可能已移除并重新导入了同一路径，
+  // 期间磁盘内容可能全变了）。在这里单点失效，覆盖导入/移除两条路径。
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'folders')) ai.invalidateWorkspace();
   return enqueueRecovery(async () => {
     const next = sanitizeSession({ ...(await readSession()), ...patch });
     await ensureDataDir();
@@ -268,11 +271,12 @@ async function perform(action, rawSnapshot = state, params = null) {
     const decision = await chooseDirty(snapshot, 'new'); if (decision === 'cancel') return { canceled: true };
     opened = null; await clearRecovery(); return adopt(resultFor('', '未命名.md', null, '', false));
   }
-  if (action === 'save') {
-    if (!opened?.filepath) return saveAsPath(snapshot);
-    return savePath(snapshot, opened.filepath);
+  if (action === 'save' || action === 'saveAs') {
+    // 保存会改变磁盘内容，工作区索引里该文档的链接与正文摘要都可能过期。
+    ai.invalidateWorkspace();
+    if (action === 'save') return opened?.filepath ? savePath(snapshot, opened.filepath) : saveAsPath(snapshot);
+    return saveAsPath(snapshot);
   }
-  if (action === 'saveAs') return saveAsPath(snapshot);
   if (action === 'close') {
     const decision = await chooseDirty(snapshot, 'close'); if (decision === 'cancel') return { canceled: true };
     if (decision === 'discard' || decision === 'save') await clearRecovery();
@@ -549,6 +553,50 @@ app.whenReady().then(async () => {
   ipcMain.handle('ai:provider:status', async (event) => { if (!isTrusted(event)) return { ok: false }; return ai.getProviderStatus(); });
   // 上下文阈值由主进程下发，前端不再硬编码，避免提示与实际发送范围漂移。
   ipcMain.handle('ai:limits', async (event) => { if (!isTrusted(event)) return { ok: false }; return { ok: true, limits: ai.getContextLimits() }; });
+  // 工作区（H2）：文件夹归组的结构与链接关系。只在本地索引上查询，不经过模型。
+  // 范围固定为 sessionState 里登记的已导入文件夹，渲染层无法指定任意路径。
+  ipcMain.handle('ai:workspace', async (event) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的工作区请求' };
+    try {
+      return { ok: true, workspace: await ai.describeWorkspace(sessionState?.folders || []) };
+    } catch (error) {
+      return { ok: false, message: error.message || '工作区索引失败' };
+    }
+  });
+  ipcMain.handle('ai:links', async (event, query) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的链接查询请求' };
+    try {
+      if (query !== undefined && query !== null) {
+        if (typeof query !== 'object' || Array.isArray(query)) throw new Error('无效的链接查询参数');
+        // 与 preload 的 validLinkQuery 同一口径：非法就拒绝，不静默降级成「未指定标题」。
+        // 三处校验（preload / 这里 / 工具 schema）行为必须一致，否则同一请求在不同层得到不同语义。
+        for (const key of ['title', 'filename']) {
+          if (query[key] !== undefined && (typeof query[key] !== 'string' || query[key].length > 200)) {
+            throw new Error('无效的链接查询参数');
+          }
+        }
+        if (query.broken !== undefined && typeof query.broken !== 'boolean') throw new Error('无效的链接查询参数');
+      }
+      const options = {
+        title: typeof query?.title === 'string' ? query.title : undefined,
+        filename: typeof query?.filename === 'string' ? query.filename : undefined,
+        broken: query?.broken === true,
+      };
+      return { ok: true, links: await ai.documentLinks(sessionState?.folders || [], options) };
+    } catch (error) {
+      return { ok: false, message: error.message || '链接查询失败' };
+    }
+  });
+  // 文件可能在应用外被改动；用户点「刷新」时丢弃缓存重建索引。
+  ipcMain.handle('ai:workspace:refresh', async (event) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的工作区请求' };
+    try {
+      ai.invalidateWorkspace();
+      return { ok: true, workspace: await ai.describeWorkspace(sessionState?.folders || []) };
+    } catch (error) {
+      return { ok: false, message: error.message || '工作区刷新失败' };
+    }
+  });
   ipcMain.handle('ai:provider:save', async (event, config) => {
     if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
     try { return { ok: true, status: await ai.saveProviderConfig(config || {}) }; }
