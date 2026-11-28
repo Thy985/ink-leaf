@@ -170,6 +170,70 @@ function scannableText(block){
   return stripInlineDollarMath(scannable);
 }
 
+// ---------------------------------------------------------------------------
+// Wikilinks（[[标题]]）
+// ---------------------------------------------------------------------------
+// 双向链接是墨页「知识组织」的基础语法。解析放在这里而不是 desktop/ai/，
+// 是因为它是文档语法的一部分：渲染、反向链接、Agent 工具必须看同一个结果，
+// 另写一份解析器迟早会与渲染不一致（AGENTS.md 单一事实来源）。
+//
+// 只认 [[标题]] 与 [[标题|显示文字]]：
+// - 空标题、含换行的、超过 200 字符的不算链接（多半是误写而非真实引用）；
+// - 代码块/行内代码/公式/URL 里的 [[...]] 不算（它们只是字符串内容）。
+// [[标题]] 与 [[标题|显示文字]] 都认。| 之后是显示文字，不参与目标匹配。
+const WIKILINK_ALIAS_RE=/\[\[([^\[\]\n|]{1,200})\|([^\[\]\n]{1,200})\]\]/g;
+const WIKILINK_RE=/\[\[([^\[\]\n|]{1,200})\]\]/g;
+
+function normalizeWikiTarget(title){
+  // 链接目标是标题而不是路径：统一去首尾空白、压掉内部连续空白，
+  // 并与文件名比对时忽略扩展名与大小写（见 caller）。
+  return String(title||'').trim().replace(/\s+/g,' ');
+}
+
+// 从纯文本里取所有 wikilink。传入的 text 应当已经过 scannableText 处理，
+// 否则代码块里的 [[...]] 会被误计入。
+export function extractWikilinks(text){
+  const out=[];
+  const source=String(text||'');
+  const seen=new Set();
+  const push=(target,alias,raw)=>{
+    const normalized=normalizeWikiTarget(target);
+    if(!normalized)return;
+    const key=normalized.toLowerCase();
+    if(seen.has(key))return;
+    seen.add(key);
+    out.push({target:normalized, alias:alias?String(alias).trim():'', raw});
+  };
+  // 先匹配带别名的形式，再从原文里抹掉它们，剩下的才是 [[标题]]，
+  // 否则 [[a|b]] 会被单目标正则跳过而漏掉。
+  const rest=source.replace(WIKILINK_ALIAS_RE,(raw,target,alias)=>{push(target,alias,raw);return ' ';});
+  for(const match of rest.matchAll(WIKILINK_RE)) push(match[1],'',match[0]);
+  return out;
+}
+
+// 从文档块里取 wikilink：逐块用 scannableText 去掉代码/公式/URL 后再匹配。
+export function documentWikilinks(blocks){
+  const list=Array.isArray(blocks)?blocks:[];
+  const all=[];
+  for(const block of list){
+    const text=scannableText(block);
+    if(!text||!text.includes('[['))continue;
+    for(const link of extractWikilinks(text)){
+      all.push({...link, blockId:block.id??null});
+    }
+  }
+  return all;
+}
+
+// 链接目标与文件名的匹配规则：去掉 .md/.markdown/.txt 扩展名后比较，
+// 大小写不敏感。返回 null 表示不匹配。
+export function matchWikiTarget(target, filename){
+  const t=normalizeWikiTarget(target).toLowerCase();
+  if(!t)return null;
+  const base=String(filename||'').replace(/\.(md|markdown|txt)$/i,'').toLowerCase();
+  return t===base?base:null;
+}
+
 export function buildDocContext(blocks){
   const list=Array.isArray(blocks)?blocks:[], footnotes=new Map(), links=new Map(), order=[], duplicateFootnotes=new Set(), duplicateLinks=new Set();
   for(const block of list){

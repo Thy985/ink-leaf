@@ -3,7 +3,12 @@
 // 借鉴来的挂载点：校验发生在执行之前，而不是执行完之后再事后检查。
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { SEARCH_FOLDER_SCHEMA, SEARCH_DOCUMENT_SCHEMA, validate } from './schema.mjs';
+import {
+  SEARCH_FOLDER_SCHEMA, SEARCH_DOCUMENT_SCHEMA, LIST_WORKSPACE_SCHEMA, FIND_LINKS_SCHEMA, validate,
+} from './schema.mjs';
+import {
+  buildWorkspaceIndex, describeWorkspace, findBacklinks, findBrokenLinks,
+} from './workspace.mjs';
 
 const require = createRequire(import.meta.url);
 const folders = require('../folders.cjs');
@@ -51,6 +56,14 @@ export function createTools({ folders: roots = [], io, document: currentDocument
     .map((entry) => (entry && typeof entry === 'object' ? entry.path : entry))
     .filter((entry) => typeof entry === 'string' && path.isAbsolute(entry));
   roots = usableRoots;
+  // 索引按需构建且只建一次：一轮 Agent 里模型常连续追问，
+  // 每次都重扫整个文件夹既慢又毫无意义。索引只在本次工具会话内有效，
+  // 不跨轮缓存——用户随时可能在应用外改动文件，长期缓存会读到过期内容。
+  let indexPromise = null;
+  const getIndex = () => {
+    if (!indexPromise) indexPromise = buildWorkspaceIndex({ roots, io: io || undefined });
+    return indexPromise;
+  };
   // 当前文档作为「问答上下文」存在时，它自己就是一个检索范围。
   // 与 search_folder 分开是为了让权限边界在工具清单里一眼可辨：
   // 读已导入文件夹是另一类能力，读当前文档是又一类能力。
@@ -134,6 +147,55 @@ export function createTools({ folders: roots = [], io, document: currentDocument
           note: collected.length
             ? '以下为命中片段，路径相对于所属文件夹。'
             : '没有找到匹配内容；可以换一个关键词再试。',
+        };
+      },
+    },
+    list_workspace: {
+      label: '列出工作区',
+      description: '列出用户已导入的工作区：包含哪些文件夹、每篇文档的标题与相对路径。只描述结构，不返回正文。',
+      schema: LIST_WORKSPACE_SCHEMA,
+      roots,
+      mutates: false,
+      async run() {
+        if (!roots.length) {
+          return { roots: [], totalDocs: 0, documents: [], note: '用户还没有导入任何文件夹。' };
+        }
+        const desc = describeWorkspace(await getIndex());
+        return { ...desc, note: desc.truncated ? '文档数量超过索引上限，列表可能不完整。' : '以下为已导入文件夹中的文档清单。' };
+      },
+    },
+    find_links: {
+      label: '查询链接关系',
+      description: '查询某篇文档的反向链接（哪些文档用 [[标题]] 指向它），或列出指向不存在文档的死链。用于理解文档之间的关系。',
+      schema: FIND_LINKS_SCHEMA,
+      roots,
+      mutates: false,
+      async run(args) {
+        if (!roots.length) {
+          return { title: args.title || '', targets: [], backlinks: [], note: '用户还没有导入任何文件夹。' };
+        }
+        const index = await getIndex();
+        if (args.broken) {
+          const broken = findBrokenLinks(index);
+          return {
+            broken,
+            note: broken.length ? '以下链接指向不存在的文档。' : '没有发现指向不存在文档的链接。',
+          };
+        }
+        if (!args.title) {
+          // 两者都不指定时给死链清单——这是用户最常见的「链接检查」需求。
+          const broken = findBrokenLinks(index);
+          return {
+            broken,
+            note: '未指定标题，返回死链清单。可以用 title 参数查询某篇文档的反向链接。',
+          };
+        }
+        const result = findBacklinks(index, args.title);
+        return {
+          ...result,
+          note: result.backlinks.length
+            ? `找到 ${result.backlinks.length} 条指向「${args.title}」的链接。`
+            : `没有文档指向「${args.title}」。`,
         };
       },
     },

@@ -549,6 +549,40 @@ app.whenReady().then(async () => {
   ipcMain.handle('ai:provider:status', async (event) => { if (!isTrusted(event)) return { ok: false }; return ai.getProviderStatus(); });
   // 上下文阈值由主进程下发，前端不再硬编码，避免提示与实际发送范围漂移。
   ipcMain.handle('ai:limits', async (event) => { if (!isTrusted(event)) return { ok: false }; return { ok: true, limits: ai.getContextLimits() }; });
+  // 工作区（H2）：文件夹归组的结构与链接关系。只在本地索引上查询，不经过模型。
+  // 范围固定为 sessionState 里登记的已导入文件夹，渲染层无法指定任意路径。
+  ipcMain.handle('ai:workspace', async (event) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的工作区请求' };
+    try {
+      return { ok: true, workspace: await ai.describeWorkspace(sessionState?.folders || []) };
+    } catch (error) {
+      return { ok: false, message: error.message || '工作区索引失败' };
+    }
+  });
+  ipcMain.handle('ai:links', async (event, query) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的链接查询请求' };
+    try {
+      if (query !== undefined && (typeof query !== 'object' || query === null || Array.isArray(query))) throw new Error('无效的链接查询参数');
+      const options = {
+        title: typeof query?.title === 'string' ? query.title.slice(0, 200) : undefined,
+        filename: typeof query?.filename === 'string' ? query.filename.slice(0, 200) : undefined,
+        broken: query?.broken === true,
+      };
+      return { ok: true, links: await ai.documentLinks(sessionState?.folders || [], options) };
+    } catch (error) {
+      return { ok: false, message: error.message || '链接查询失败' };
+    }
+  });
+  // 文件可能在应用外被改动；用户点「刷新」时丢弃缓存重建索引。
+  ipcMain.handle('ai:workspace:refresh', async (event) => {
+    if (!isTrusted(event)) return { ok: false, message: '不受信任的工作区请求' };
+    try {
+      ai.invalidateWorkspace();
+      return { ok: true, workspace: await ai.describeWorkspace(sessionState?.folders || []) };
+    } catch (error) {
+      return { ok: false, message: error.message || '工作区刷新失败' };
+    }
+  });
   ipcMain.handle('ai:provider:save', async (event, config) => {
     if (!isTrusted(event)) return { ok: false, message: '不受信任的 AI 请求' };
     try { return { ok: true, status: await ai.saveProviderConfig(config || {}) }; }

@@ -1664,14 +1664,112 @@ function activeFolderRel() {
 }
 function switchPanel(mode) {
   const showFolders = mode === 'folders';
-  $('outline').hidden = showFolders;
+  const showWorkspace = mode === 'workspace';
+  $('outline').hidden = showFolders || showWorkspace;
   $('folder-panel').hidden = !showFolders;
-  $('panel-outline').setAttribute('aria-pressed', String(!showFolders));
+  $('workspace-panel').hidden = !showWorkspace;
+  $('panel-outline').setAttribute('aria-pressed', String(!showFolders && !showWorkspace));
   $('panel-folders').setAttribute('aria-pressed', String(showFolders));
+  $('panel-workspace').setAttribute('aria-pressed', String(showWorkspace));
   if (showFolders && folderState.activeFolder && !folderState.lastScan) rescanFolder();
+  // 工作区索引是懒建的：只有真正打开面板时才扫描，避免导入文件夹时多做一次全盘读取。
+  if (showWorkspace) refreshWorkspacePanel();
 }
 $('panel-outline').onclick = () => switchPanel('outline');
 $('panel-folders').onclick = () => { if (!desktop) { toast('文件夹导入仅在 Windows 桌面版提供'); return; } switchPanel('folders'); };
+$('panel-workspace').onclick = () => {
+  if (!desktop?.ai?.workspace) { toast('工作区仅在 Windows 桌面版提供'); return; }
+  switchPanel('workspace');
+};
+
+// 工作区面板：展示当前文档的反向链接、死链与文档清单。
+// 索引在主进程里建（只在内存），这里只负责渲染，不接触文件系统。
+let workspaceBusy = false;
+async function refreshWorkspacePanel(force = false) {
+  if (!desktop?.ai?.workspace || workspaceBusy) return;
+  workspaceBusy = true;
+  const summary = $('workspace-summary');
+  if (summary) summary.textContent = force ? '正在重建索引…' : '正在读取工作区…';
+  try {
+    const result = force
+      ? await desktop.ai.refreshWorkspace()
+      : await desktop.ai.workspace();
+    if (!result?.ok) throw new Error(result?.message || '工作区索引失败');
+    renderWorkspace(result.workspace);
+  } catch (error) {
+    if (summary) summary.textContent = friendlyError(error, '工作区索引失败');
+  } finally {
+    workspaceBusy = false;
+  }
+}
+
+function renderWorkspace(workspace) {
+  const empty = $('workspace-empty');
+  const summary = $('workspace-summary');
+  const linksBox = $('workspace-links');
+  if (!workspace || !workspace.totalDocs) {
+    if (empty) empty.hidden = false;
+    if (summary) summary.textContent = '尚未建立索引';
+    if (linksBox) linksBox.innerHTML = '';
+    const brokenDetails = $('workspace-broken');
+    const docsDetails = $('workspace-docs');
+    if (brokenDetails) brokenDetails.hidden = true;
+    if (docsDetails) docsDetails.hidden = true;
+    return;
+  }
+  if (empty) empty.hidden = true;
+  // 明确说明索引只在本机内存里，让用户知道文档内容没有被上传。
+  if (summary) {
+    summary.textContent = `${workspace.totalDocs} 篇文档 · ${workspace.linkCount} 条链接 · ${workspace.brokenCount} 条死链`;
+    summary.title = `索引只在内存中，不写入磁盘。文件夹：${(workspace.roots || []).join('、')}`;
+  }
+
+  // 当前文档的反向链接：异步取，不阻塞面板其它部分。
+  if (linksBox) {
+    const filename = window.inkstoneGetFilename?.() || '';
+    linksBox.innerHTML = '<p class="workspace-hint">正在查询当前文档的反向链接…</p>';
+    desktop.ai.links({ filename }).then((result) => {
+      if (!result?.ok) { linksBox.innerHTML = ''; return; }
+      renderBacklinks(linksBox, result.links);
+    }).catch(() => { linksBox.innerHTML = ''; });
+  }
+
+  // 死链
+  desktop.ai.links({ broken: true }).then((result) => {
+    const details = $('workspace-broken');
+    const list = $('workspace-broken-list');
+    const broken = result?.ok ? (result.links.broken || []) : [];
+    if (!details || !list) return;
+    details.hidden = broken.length === 0;
+    $('workspace-broken-count').textContent = broken.length ? `(${broken.length})` : '';
+    list.innerHTML = broken.map((item) =>
+      `<li><code>${esc(item.title)}</code> → ${esc(item.target)}</li>`
+    ).join('');
+  }).catch(() => {});
+
+  // 文档清单
+  const details = $('workspace-docs');
+  const list = $('workspace-docs-list');
+  if (details && list) {
+    details.hidden = false;
+    $('workspace-docs-count').textContent = `(${workspace.totalDocs})`;
+    list.innerHTML = (workspace.documents || []).map((doc) =>
+      `<li><span class="workspace-doc-title">${esc(doc.title)}</span><span class="workspace-doc-path">${esc(doc.path)}</span>${doc.truncated ? '<span class="workspace-doc-truncated">已截断</span>' : ''}</li>`
+    ).join('');
+  }
+}
+
+function renderBacklinks(container, links) {
+  const items = links?.backlinks || [];
+  if (!items.length) {
+    container.innerHTML = '<p class="workspace-hint">没有其他文档用 [[标题]] 指向当前文档。</p>';
+    return;
+  }
+  container.innerHTML = `<p class="workspace-hint">指向当前文档的链接（${items.length}）</p><ul class="workspace-backlinks">${
+    items.map((item) => `<li><span class="workspace-doc-title">${esc(item.from.title)}</span><span class="workspace-doc-path">${esc(item.from.path)}</span></li>`).join('')
+  }</ul>`;
+}
+$('workspace-refresh').onclick = () => refreshWorkspacePanel(true);
 function renderChips() {
   const wrap = $('folder-chips');
   wrap.replaceChildren();

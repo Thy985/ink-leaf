@@ -525,6 +525,10 @@ module.exports = {
   // 通过动态 import 加载，保持 ai.cjs 在无 Electron/SDK 环境下仍可被单元测试直接 require。
   runAgent,
   createTools,
+  // H2 工作区：本地索引查询，不经过模型。
+  describeWorkspace,
+  documentLinks,
+  invalidateWorkspace,
 };
 
 // 便捷包装：跑一轮可调用工具的问答。
@@ -560,4 +564,54 @@ async function runAgent(options = {}) {
 async function createTools({ folders = [], document = null } = {}) {
   const { createTools: makeTools } = await import('./ai/tools.mjs');
   return makeTools({ folders, document });
+}
+
+// ---------------------------------------------------------------------------
+// 工作区（H2）
+// ---------------------------------------------------------------------------
+// 侧栏要能展示工作区结构与反向链接，这些查询不经过模型，直接在本地索引上完成。
+// 索引按「文件夹集合」缓存：同一组文件夹重复查询不重扫；文件夹增减则重建。
+let workspaceCache = { key: '', index: null };
+
+async function getWorkspaceIndex(folders = []) {
+  const { buildWorkspaceIndex } = await import('./ai/workspace.mjs');
+  const key = JSON.stringify((Array.isArray(folders) ? folders : []).map((f) => (f && typeof f === 'object' ? f.path : f)));
+  if (workspaceCache.index && workspaceCache.key === key) return workspaceCache.index;
+  const index = await buildWorkspaceIndex({ roots: folders });
+  workspaceCache = { key, index };
+  return index;
+}
+
+// 手动让缓存失效：文件在应用外被改动、或用户点了刷新时调用。
+function invalidateWorkspace() {
+  workspaceCache = { key: '', index: null };
+}
+
+// 工作区概览：文件夹 + 文档清单（不含正文）。
+async function describeWorkspace(folders = []) {
+  const { describeWorkspace: describe, findBrokenLinks } = await import('./ai/workspace.mjs');
+  const index = await getWorkspaceIndex(folders);
+  const desc = describe(index);
+  return {
+    ...desc,
+    // 链接统计一并返回，侧栏可以直接显示「N 条链接 / M 条死链」。
+    linkCount: countLinks(index),
+    brokenCount: findBrokenLinks(index).length,
+  };
+}
+
+// 某篇文档的反向链接。title 缺省时用 filename 推断。
+async function documentLinks(folders = [], { title, filename, broken = false } = {}) {
+  const { findBacklinks, findBrokenLinks } = await import('./ai/workspace.mjs');
+  const index = await getWorkspaceIndex(folders);
+  if (broken) return { broken: findBrokenLinks(index) };
+  const target = title || (typeof filename === 'string' ? filename.replace(/\.(md|markdown|txt)$/i, '') : '');
+  if (!target) return { title: '', targets: [], backlinks: [] };
+  return findBacklinks(index, target);
+}
+
+function countLinks(index) {
+  let total = 0;
+  for (const list of index.backlinks.values()) total += list.length;
+  return total;
 }
