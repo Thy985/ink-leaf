@@ -19,6 +19,11 @@ const MAX_RESULTS = 12;
 const MAX_RESULTS_PER_FILE = 2;
 const MAX_CONTEXT_CHARS = 300;
 
+// 能改变「读哪里」的参数名。scope='document' 的工具一旦出现这些字段，
+// guard 会拒绝——因为它的范围复核只假定「读当前文档」，多一个目标参数
+// 就等于多一条未经复核的读取路径。
+const SCOPE_CHANGING_PARAMS = new Set(['folder', 'path', 'file', 'filepath', 'docId', 'documentId', 'root', 'dir', 'dirname']);
+
 // 已导入文件夹解析：只接受 session 里登记过的绝对路径。
 // 模型给的名字不可信，绝不能让它在任意磁盘位置检索。
 // Windows 路径大小写不敏感，且盘符可能有 \\?\ 前缀，所以比较前统一规范化：
@@ -73,6 +78,9 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '检索当前文档',
       description: '在当前正在编辑的这篇文档内检索关键词，返回行号与上下文片段。只能读当前这一篇文档，不能访问其他文件。',
       schema: SEARCH_DOCUMENT_SCHEMA,
+      // 范围声明：只读当前文档。guard 会复核 hasDocument 与 schema 不含路径类参数。
+      scope: 'document',
+      hasDocument,
       // 只读工具：不做任何写操作，因此无需额外确认。
       mutates: false,
       async run(args) {
@@ -105,7 +113,8 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '检索文件夹',
       description: '在用户已导入的文件夹中全文检索关键词，返回命中的文档路径、行号与上下文片段。只能访问已导入文件夹。',
       schema: SEARCH_FOLDER_SCHEMA,
-      // 供 guard 做执行前的范围复核；不对外暴露给模型。
+      // 范围声明：只读已导入文件夹。
+      scope: 'folders',
       roots,
       // 只读工具：不做任何写操作，因此无需额外确认。
       mutates: false,
@@ -154,6 +163,8 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '列出工作区',
       description: '列出用户已导入的工作区：包含哪些文件夹、每篇文档的标题与相对路径。只描述结构，不返回正文。',
       schema: LIST_WORKSPACE_SCHEMA,
+      // 范围声明：只读已导入文件夹。
+      scope: 'folders',
       roots,
       mutates: false,
       async run() {
@@ -168,6 +179,8 @@ export function createTools({ folders: roots = [], io, document: currentDocument
       label: '查询链接关系',
       description: '查询某篇文档的反向链接（哪些文档用 [[标题]] 指向它），或列出指向不存在文档的死链。用于理解文档之间的关系。',
       schema: FIND_LINKS_SCHEMA,
+      // 范围声明：只读已导入文件夹。
+      scope: 'folders',
       roots,
       mutates: false,
       async run(args) {
@@ -203,24 +216,59 @@ export function createTools({ folders: roots = [], io, document: currentDocument
   return { registry, roots };
 }
 
-// 执行前的守卫：工具名白名单 → schema 校验 → 文件夹范围复核。
+// 执行前的守卫：工具名白名单 → schema 校验 → 读取范围复核。
 // 返回 { ok: true } 或 { ok: false, reason }；拒绝原因会作为工具结果回填给模型，
 // 让它有机会自我纠正，而不是抛异常中断整轮。
 //
 // 实测确认 SDK 不会在调用 execute 前替我们校验工具名与参数（探针：非法参数会原样传到 execute），
 // 所以这里是唯一一道拦得住不可信模型输入的关口，不能只靠 run() 内部自觉。
+//
+// 范围复核（H1 复审 I3）：每个工具都必须声明 scope，guard 按声明统一复核。
+// 早先只有「带 folder 参数 + 有 roots」的工具才会被复核，search_document 这类
+// 靠闭包自保的工具不在复核范围内——当前安全，但任何人给它加个 path/docId 参数，
+// guard 都不会拦，而注释却写着它是安全钩子。现在：
+//   scope='folders'  必须提供 roots，folder 参数（若有）必须落在其中
+//   scope='document' 必须确实有当前文档，且 schema 不得出现任何路径/文档标识字段
+//   scope='none'     不读用户数据
+// 声明与实现不符时 guard 直接拒绝，而不是放行。
 export async function guard(toolName, args, registry) {
   if (typeof toolName !== 'string' || !Object.prototype.hasOwnProperty.call(registry, toolName)) {
     return { ok: false, reason: `不在允许列表内的工具：${toolName}` };
   }
-  const checked = validate(registry[toolName].schema, args);
-  if (!checked.ok) return { ok: false, reason: checked.reason };
-  // 带文件夹参数的工具，在执行前就确认它指向已导入文件夹。
-  // 放在 guard 而不是 run 里，是为了让「越界」与「参数非法」一样得到统一的拒绝轨迹。
   const spec = registry[toolName];
-  if (checked.value.folder !== undefined && spec.roots) {
-    const scope = resolveRoot(checked.value.folder, spec.roots);
-    if (!scope.ok) return { ok: false, reason: scope.reason };
+  const checked = validate(spec.schema, args);
+  if (!checked.ok) return { ok: false, reason: checked.reason };
+
+  const scope = spec.scope || 'none';
+  const declaredProps = Object.keys(spec.schema?.properties || {});
+
+  if (scope === 'folders') {
+    if (!Array.isArray(spec.roots)) {
+      return { ok: false, reason: '工具范围声明与实现不符：缺少已导入文件夹' };
+    }
+    if (checked.value.folder !== undefined) {
+      const resolved = resolveRoot(checked.value.folder, spec.roots);
+      if (!resolved.ok) return { ok: false, reason: resolved.reason };
+    }
+    return { ok: true, value: checked.value };
+  }
+
+  if (scope === 'document') {
+    if (!spec.hasDocument) {
+      return { ok: false, reason: '工具范围声明与实现不符：没有可用的当前文档' };
+    }
+    // 只读当前文档的工具不该接受任何能改变读取目标的参数。
+    // 一旦有人加了 path / docId / folder 之类字段，这里会拦下并提示去补范围复核逻辑，
+    // 而不是让一个未经复核的参数悄悄生效。
+    const leaked = declaredProps.filter((key) => SCOPE_CHANGING_PARAMS.has(key));
+    if (leaked.length) {
+      return { ok: false, reason: `工具范围声明与实现不符：document 范围的工具不应接受参数 ${leaked.join('、')}` };
+    }
+    return { ok: true, value: checked.value };
+  }
+
+  if (scope !== 'none') {
+    return { ok: false, reason: `未知的工具范围声明：${scope}` };
   }
   return { ok: true, value: checked.value };
 }
