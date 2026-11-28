@@ -12,13 +12,17 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import { truncateText } from './schema.mjs';
 
 const require = createRequire(import.meta.url);
 const folders = require('../folders.cjs');
 const fsp = fs.promises;
 
-// 单次建索引的规模上限，与 folders.cjs 的扫描上限保持一致，避免出现「索引里有、搜索里没有」。
-const MAX_INDEX_FILES = 2000;
+// 单次建索引的规模上限。
+// 文件数上限与 folders.cjs 的 MAX_SCAN_DOCS 对齐：索引若比「文件夹」面板收录更多，
+// 模型就会看到用户在界面上看不到的文档，两边口径必须一致（复审 F2）。
+// 深度与条目上限直接取自 folders.cjs，见 listMarkdown。
+const MAX_INDEX_FILES = folders.MAX_SCAN_DOCS;
 const MAX_INDEX_BYTES = 10 * 1024 * 1024;
 // 索引里保留每篇文档的截断副本，用于反向链接与快速摘要。
 // 完整正文仍由调用方按需从磁盘读取，避免索引长期占用大量内存。
@@ -38,6 +42,15 @@ function tokenize(text) {
     if (word.length >= 2) tokens.add(word);
   }
   return tokens;
+}
+
+// Windows 路径大小写不敏感，且可能有 \\?\ 前缀；比较前统一规范化，
+// 否则同一文件夹的两个写法会被当成不同文件夹（复审 F8 的同名文档去重依赖它）。
+function normalizeForCompare(p) {
+  let value = String(p || '');
+  if (/^\\\\\?\\/.test(value)) value = value.slice(4);
+  value = path.normalize(value);
+  return process.platform === 'win32' ? value.toLowerCase() : value;
 }
 
 // 把相对路径变成展示用标题：去掉扩展名，只保留文件名。
@@ -67,34 +80,45 @@ export async function buildWorkspaceIndex({ roots = [], io = fsp, parse } = {}) 
   }
 
   const files = [];
+  const skippedTitles = new Set();
   let truncated = false;
   let scanned = 0;
 
   for (const root of usableRoots) {
-    const list = await listMarkdown(root, io);
-    for (const rel of list) {
+    const listing = await listMarkdown(root, io);
+    if (listing.truncated) truncated = true;
+    for (const rel of listing.files) {
       if (scanned >= MAX_INDEX_FILES) { truncated = true; break; }
       const target = path.resolve(root, ...rel.split('/'));
       let text;
+      let byteSize = 0;
       try {
         const stat = await io.stat(target);
-        if (stat && stat.size > MAX_INDEX_BYTES) continue;
+        if (stat && stat.size > MAX_INDEX_BYTES) {
+          // 超过 10 MB 的文档不进索引。它仍然存在，死链检测不能把它当成「不存在」。
+          skippedTitles.add(titleOf(path.basename(rel)).toLowerCase());
+          continue;
+        }
+        byteSize = stat ? stat.size : 0;
         text = await io.readFile(target, 'utf8');
       } catch {
         continue;
       }
       scanned += 1;
-      const stored = text.length > MAX_INDEXED_TEXT ? text.slice(0, MAX_INDEXED_TEXT) : text;
+      const overLimit = text.length > MAX_INDEXED_TEXT;
       const name = path.basename(rel);
       files.push({
         root,
         rel,
         name,
         title: titleOf(name),
-        size: text.length,
-        truncated: text.length > MAX_INDEXED_TEXT,
+        // bytes 用磁盘字节数，而不是 UTF-16 码元数——中文文档两者差三倍，
+        // 展示给用户看的大小必须是前者。
+        bytes: byteSize,
+        truncated: overLimit,
         // 只留摘要供快速预览；完整正文不进索引。
-        text: stored,
+        // 用共享的 truncateText，避免在代理对中间切断 emoji/CJK 扩展字（复审 F5）。
+        text: overLimit ? truncateText(text, MAX_INDEXED_TEXT) : text,
       });
     }
     if (truncated) break;
@@ -130,6 +154,9 @@ export async function buildWorkspaceIndex({ roots = [], io = fsp, parse } = {}) 
     backlinks,
     // 保留解析器引用：死链检测要复用同一份实现，不能在别处再写一个。
     extract,
+    // 存在但未被索引的文档标题（超 10 MB / 超出文件数上限）。
+    // 死链检测必须先查这里，否则会把它们误报成「指向不存在的文档」。
+    skippedTitles,
     scannedAt: new Date().toISOString(),
     truncated,
   };
@@ -137,22 +164,33 @@ export async function buildWorkspaceIndex({ roots = [], io = fsp, parse } = {}) 
 
 // 列出文件夹内的 Markdown（相对路径）。复用 folders.cjs 的跳过规则，
 // 避免索引与搜索对「哪些文件算文档」产生两套判断。
+// 列出文件夹内的 Markdown（相对路径）。
+// 深度与条目上限直接复用 folders.cjs 的常量——不这样做的话，索引会比「文件夹」面板
+// 走进更深的目录、看到更多条目，两份视图口径不一致；更严重的是深目录/巨型目录
+// 会把主进程拖死（复审 F1）。返回 truncated 让调用方如实告知用户结果不完整。
 async function listMarkdown(root, io) {
   const out = [];
-  async function walk(dirRel) {
-    if (out.length >= MAX_INDEX_FILES) return;
+  let entries = 0;
+  // truncated 只表示「结果不完整」，不能当作「中止遍历」的信号：
+  // 某一支超深时只该跳过那一支，同层的其它目录仍要继续走，
+  // 否则一个深层目录会让整个文件夹的文档都消失。
+  let truncated = false;
+  async function walk(dirRel, depth) {
+    if (depth > folders.MAX_SCAN_DEPTH) { truncated = true; return; }
     let dirents;
     try {
       dirents = await io.readdir(path.resolve(root, ...dirRel.split('/').filter(Boolean)), { withFileTypes: true });
     } catch { return; }
     for (const dirent of dirents) {
-      if (out.length >= MAX_INDEX_FILES) return;
+      entries += 1;
+      if (entries > folders.MAX_SCAN_ENTRIES) { truncated = true; return; }
+      if (out.length >= MAX_INDEX_FILES) { truncated = true; return; }
       // 软链接不跟随：与 folders.cjs 的扫描保持一致。
       if (dirent.isSymbolicLink()) continue;
       const childRel = dirRel ? `${dirRel}/${dirent.name}` : dirent.name;
       if (dirent.isDirectory()) {
         if (folders.SKIP_DIRS.has(dirent.name)) continue;
-        await walk(childRel);
+        await walk(childRel, depth + 1);
         continue;
       }
       if (!dirent.isFile()) continue;
@@ -161,8 +199,8 @@ async function listMarkdown(root, io) {
       out.push(childRel);
     }
   }
-  await walk('');
-  return out;
+  await walk('', 0);
+  return { files: out, truncated };
 }
 
 // 反向链接：对每篇文档解析出它指向的标题，登记到目标文档上。
@@ -175,8 +213,13 @@ function buildBacklinks(files, byTitle, extract) {
     for (const link of links) {
       const target = String(link?.target || '').toLowerCase();
       if (!target) continue;
-      const targets = byTitle.get(target);
+      let targets = byTitle.get(target);
       if (!targets) continue; // 指向不存在的文档：不建边，但仍可被 find_links 报告为「未解析」
+      // 同名文档跨文件夹并存时，优先连到**同一文件夹**里的那篇。
+      // 否则 [[report]] 会被同时登记到 proj-a/report 与 proj-b/report，
+      // 制造出「guide 指向了另一个项目的 report」这种假阳性（复审 F8）。
+      const sameRoot = targets.filter((i) => normalizeForCompare(files[i].root) === normalizeForCompare(file.root));
+      if (sameRoot.length) targets = sameRoot;
       for (const toIndex of targets) {
         if (toIndex === fromIndex) continue; // 自引用不算反向链接
         let list = backlinks.get(toIndex);
@@ -274,6 +317,7 @@ export function findBacklinks(index, title) {
 export function findBrokenLinks(index) {
   if (!index || typeof index.extract !== 'function') return [];
   const broken = [];
+  const skipped = index.skippedTitles || new Set();
   for (const file of index.files) {
     let links = [];
     try {
@@ -282,6 +326,9 @@ export function findBrokenLinks(index) {
     for (const link of links) {
       const target = String(link?.target || '').trim().toLowerCase();
       if (!target || index.byTitle.has(target)) continue;
+      // 目标文档存在、只是没被索引（超大小 / 超数量）：这不是死链。
+      // 把它们混进死链清单会让用户去找一个明明还在的文件（复审 F9）。
+      if (skipped.has(target)) continue;
       broken.push({ root: file.root, path: file.rel, title: file.title, target: link.target });
     }
   }
@@ -289,18 +336,26 @@ export function findBrokenLinks(index) {
 }
 
 // 工作区概览：给 list_workspace 工具用。只描述结构，不返回正文。
-export function describeWorkspace(index) {
-  if (!index) return { roots: [], totalDocs: 0, documents: [], truncated: false };
+// limit 是给模型看的条数上限：一条 80–150 字符，几百条就会把上下文塞满，
+// 而 tools.mjs 对其它工具都设了上限，这里不能例外（复审 F15）。
+// 侧栏展示时传 null 取全量——那是本地渲染，不进模型上下文。
+export function describeWorkspace(index, { limit = 200 } = {}) {
+  if (!index) return { roots: [], totalDocs: 0, documents: [], truncated: false, hasMore: false };
+  const all = index.files.map((file) => ({
+    root: file.root,
+    path: file.rel,
+    title: file.title,
+    // bytes 来自 stat.size（磁盘字节数），不是 UTF-16 码元数。
+    bytes: file.bytes,
+    truncated: file.truncated,
+  }));
+  const limited = typeof limit === 'number' && limit > 0 ? all.slice(0, limit) : all;
   return {
     roots: index.roots,
-    totalDocs: index.files.length,
+    totalDocs: all.length,
+    // 索引本身被截断（深度/条目/文件数）时，文档清单也不完整。
     truncated: !!index.truncated,
-    documents: index.files.map((file) => ({
-      root: file.root,
-      path: file.rel,
-      title: file.title,
-      bytes: file.size,
-      truncated: file.truncated,
-    })),
+    hasMore: limited.length < all.length,
+    documents: limited,
   };
 }

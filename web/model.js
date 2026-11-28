@@ -181,8 +181,12 @@ function scannableText(block){
 // - 空标题、含换行的、超过 200 字符的不算链接（多半是误写而非真实引用）；
 // - 代码块/行内代码/公式/URL 里的 [[...]] 不算（它们只是字符串内容）。
 // [[标题]] 与 [[标题|显示文字]] 都认。| 之后是显示文字，不参与目标匹配。
-const WIKILINK_ALIAS_RE=/\[\[([^\[\]\n|]{1,200})\|([^\[\]\n]{1,200})\]\]/g;
-const WIKILINK_RE=/\[\[([^\[\]\n|]{1,200})\]\]/g;
+//
+// 用**单趟**正则同时匹配两种形式，且两段的字符类都排除 |：
+// 早先分两个正则再 replace 抹除的做法有两个后果（复审 F3）——
+// ① 别名段没排除 |，长度上限可被「|...」撑破，病态输入会触发平方级回溯；
+// ② replace 会改变字符串长度，raw 与原文偏移不再可靠。
+const WIKILINK_RE=/\[\[([^\[\]\n|]{1,200})(?:\|([^\[\]\n|]{0,200}))?\]\]/g;
 
 function normalizeWikiTarget(title){
   // 链接目标是标题而不是路径：统一去首尾空白、压掉内部连续空白，
@@ -196,18 +200,17 @@ export function extractWikilinks(text){
   const out=[];
   const source=String(text||'');
   const seen=new Set();
-  const push=(target,alias,raw)=>{
-    const normalized=normalizeWikiTarget(target);
-    if(!normalized)return;
-    const key=normalized.toLowerCase();
-    if(seen.has(key))return;
+  for(const match of source.matchAll(WIKILINK_RE)){
+    const target=normalizeWikiTarget(match[1]);
+    if(!target)continue;
+    const alias=match[2]?String(match[2]).trim():'';
+    // 同一目标只保留一条：反向链接关心「谁指向了它」，重复引用不改变关系。
+    // 但同目标的**不同别名**要分开保留，否则用户看不到另一种叫法（复审 F10）。
+    const key=`${target.toLowerCase()}\u0000${alias}`;
+    if(seen.has(key))continue;
     seen.add(key);
-    out.push({target:normalized, alias:alias?String(alias).trim():'', raw});
-  };
-  // 先匹配带别名的形式，再从原文里抹掉它们，剩下的才是 [[标题]]，
-  // 否则 [[a|b]] 会被单目标正则跳过而漏掉。
-  const rest=source.replace(WIKILINK_ALIAS_RE,(raw,target,alias)=>{push(target,alias,raw);return ' ';});
-  for(const match of rest.matchAll(WIKILINK_RE)) push(match[1],'',match[0]);
+    out.push({target, alias, raw:match[0]});
+  }
   return out;
 }
 
@@ -223,15 +226,6 @@ export function documentWikilinks(blocks){
     }
   }
   return all;
-}
-
-// 链接目标与文件名的匹配规则：去掉 .md/.markdown/.txt 扩展名后比较，
-// 大小写不敏感。返回 null 表示不匹配。
-export function matchWikiTarget(target, filename){
-  const t=normalizeWikiTarget(target).toLowerCase();
-  if(!t)return null;
-  const base=String(filename||'').replace(/\.(md|markdown|txt)$/i,'').toLowerCase();
-  return t===base?base:null;
 }
 
 export function buildDocContext(blocks){
