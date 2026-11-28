@@ -39,6 +39,29 @@ def load(page, raw):
     ink_load(page, raw, name="v05.md")
 
 
+def marker_state(page, selector):
+    """零字号标记的隐藏判据：0 宽 0 高、字号 0、文本仍在、aria-hidden。
+
+    ``is_hidden()`` 对 ``font-size:0`` 恒真（零字号天然是空包围盒），无法区分
+    「正确隐藏」与「位置/内容错了」，这里同时要求标记文本与读屏属性都正确。
+    """
+    return page.evaluate(
+        """(selector) => {
+          const el = document.querySelector(selector);
+          if (!el) return null;
+          const rect = el.getBoundingClientRect();
+          return {
+            width: rect.width,
+            height: rect.height,
+            text: el.textContent,
+            font: getComputedStyle(el).fontSize,
+            aria: el.getAttribute('aria-hidden'),
+          };
+        }""",
+        selector,
+    )
+
+
 def markdown(page):
     return page.evaluate("() => window.inkstone.getMarkdown()")
 
@@ -122,7 +145,10 @@ with sync_playwright() as playwright:
             "() => getComputedStyle(document.querySelector('#editor sup.fn-ref a'), '::after').content"
         ) == '"1"'
         assert page.locator("#editor sup.fn-ref a").bounding_box()["width"] > 0
-        assert page.locator("#editor .paragraph .syntax").first.is_hidden()
+        state = marker_state(page, "#editor .paragraph .syntax")
+        assert state["text"] == "[^note]", state
+        assert state["width"] == 0 and state["height"] == 0 and state["font"] == "0px", state
+        assert state["aria"] == "true", state
         cases.append("脚注引用显示为角标数字")
 
         # 行内标记只在光标所在/紧邻处展开，离开即收回。
@@ -168,9 +194,11 @@ with sync_playwright() as playwright:
         caret(page, 4)
         assert page.locator("#editor .footnote-def.active").count() == 1
         assert page.locator("#editor .footnote-def .block-marker").first.text_content() == "[^note]: "
-        assert page.locator("#editor .footnote-def .syntax").first.is_hidden()
+        state = marker_state(page, "#editor .footnote-def .block-marker")
+        assert state["width"] == 0 and state["font"] == "0px" and state["aria"] == "true", state
         blur(page)
-        assert page.locator("#editor .footnote-def .syntax").first.is_hidden()
+        state = marker_state(page, "#editor .footnote-def .block-marker")
+        assert state["text"] == "[^note]: " and state["width"] == 0, state
         assert markdown(page) == raw
         cases.append("脚注定义前缀常隐且块内容可编辑")
         print("PASS", cases[-1], flush=True)

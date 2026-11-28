@@ -48,6 +48,36 @@ def blur(page):
     page.wait_for_timeout(60)
 
 
+def marker_state(page, selector):
+    """零字号标记的「隐藏」判据：0 宽 0 高、字号 0、文本仍在、aria-hidden。
+
+    ``is_hidden()`` 以「空包围盒」判 hidden，对 ``font-size:0`` 恒真，无法区分
+    「正确隐藏」和「位置/内容错了」。这里同时要求标记文本完整保留，并检查读屏属性。
+    """
+    return page.evaluate(
+        """(selector) => {
+          const el = document.querySelector(selector);
+          if (!el) return null;
+          const rect = el.getBoundingClientRect();
+          return {
+            width: rect.width,
+            height: rect.height,
+            text: el.textContent,
+            font: getComputedStyle(el).fontSize,
+            aria: el.getAttribute('aria-hidden'),
+          };
+        }""",
+        selector,
+    )
+
+
+def click_block_left(page, index=0, dx=2):
+    box = page.locator("#editor .block").nth(index).bounding_box()
+    page.mouse.click(box["x"] + dx, box["y"] + box["height"] / 2)
+    page.wait_for_timeout(120)
+    return box
+
+
 def caret(page, index=0, offset=None):
     page.evaluate(
         """({ index, offset }) => {
@@ -183,12 +213,17 @@ with sync_playwright() as playwright:
         assert page.locator("#editor .heading").count() == 2
         assert visible_text(page.locator("#editor .heading").nth(0)) == "标题"
         assert page.locator("#outline button").nth(0).inner_text() == "标题"
-        assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
+        underline = marker_state(page, "#editor .heading .setext-underline")
+        assert underline["text"] == "\n====", underline
+        assert underline["width"] == 0 and underline["height"] == 0 and underline["font"] == "0px", underline
+        assert underline["aria"] == "true", underline
         assert markdown(page) == raw
         page.locator("#editor .heading").nth(0).click()
         # 块级标记（含 Setext 下划线）不再随光标展开；激活只影响富块与行内标记。
         page.wait_for_timeout(80)
-        assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
+        underline = marker_state(page, "#editor .heading .setext-underline")
+        assert underline["text"] == "\n====", underline
+        assert underline["width"] == 0 and underline["font"] == "0px", underline
         cases.append("Setext 标题显示、大纲正常，下划线激活后仍隐藏")
         print("PASS", cases[-1], flush=True)
 
@@ -260,12 +295,16 @@ with sync_playwright() as playwright:
         load(page, "## 标题 **粗体** 尾\n")
         blur(page)
         heading = page.locator("#editor .heading")
-        assert heading.locator(".block-marker").first.is_hidden()
+        prefix = marker_state(page, "#editor .heading .block-marker")
+        assert prefix["text"] == "## " and prefix["font"] == "0px" and prefix["aria"] == "true", prefix
         caret(page, 0, len("## 标题 "))
         page.wait_for_timeout(80)
-        assert heading.locator(".block-marker").first.is_hidden()
+        prefix = marker_state(page, "#editor .heading .block-marker")
+        assert prefix["text"] == "## " and prefix["width"] == 0, prefix
         assert heading.locator(".syntax.reveal").count() == 1
         assert heading.locator(".syntax.reveal").first.inner_text() == "**"
+        # .reveal 是刻意显示给用户看的标记：读屏可读，但光标仍不能停在内部。
+        assert heading.locator(".syntax.reveal").first.get_attribute("aria-hidden") == "false"
         caret(page, 0, len("## 标题 **粗体"))
         page.wait_for_timeout(80)
         assert heading.locator(".syntax.reveal").count() == 1
@@ -273,7 +312,8 @@ with sync_playwright() as playwright:
         caret(page, 0, len("## 标题 **粗"))
         page.wait_for_timeout(80)
         assert heading.locator(".syntax.reveal").count() == 0
-        assert heading.locator(".block-marker").first.is_hidden()
+        prefix = marker_state(page, "#editor .heading .block-marker")
+        assert prefix["text"] == "## " and prefix["font"] == "0px", prefix
         assert markdown(page) == "## 标题 **粗体** 尾\n"
         cases.append("块级前缀常隐、行内标记仅紧邻处展开")
 
@@ -554,6 +594,135 @@ with sync_playwright() as playwright:
         page.wait_for_timeout(120)
         assert markdown(page) == "粗体\n", markdown(page)
         cases.append("行内解包不触碰块级前缀")
+
+        # --- 对抗性复审 findings（B1/B2/M1/M2/M3，全部走真实点击与真实按键） ---
+        # B1：行内元素后面紧跟文本节点时，配对逻辑曾抛 TypeError 并绕过 preventDefault，
+        # 原生退格直接啃掉标记。这里点击 URL 起点后按退格，要求无异常、标记完整。
+        load(page, "**加粗** https://example.com 尾\n")
+        link = page.locator("#editor a[href='https://example.com']").first.bounding_box()
+        page.mouse.click(link["x"] + 1, link["y"] + link["height"] / 2)
+        page.wait_for_timeout(120)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**加粗**https://example.com 尾\n", ("b1", markdown(page))
+        assert not errors, errors
+        cases.append("裸 URL 紧贴粗体：URL 起点退格不抛异常、不啃标记")
+        print("PASS", cases[-1], flush=True)
+
+        # 无空格变体：退格删的是前一个可见字符，而不是闭合标记的 "*"。
+        load(page, "**b**https://x.com 尾\n")
+        link = page.locator("#editor a[href='https://x.com']").first.bounding_box()
+        page.mouse.click(link["x"] + 1, link["y"] + link["height"] / 2)
+        page.wait_for_timeout(120)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "****https://x.com 尾\n", ("b1 tight", markdown(page))
+        assert not errors, errors
+        cases.append("裸 URL 紧贴粗体（无空格）：退格删可见字符，两对标记都完整")
+        print("PASS", cases[-1], flush=True)
+
+        # B2：块级前缀紧贴行内标记时，Delete 跳过连续的隐藏标记后删第一个可见字符。
+        for source, expected, dx in [
+            ("## **粗体**", "## **体**", 2),
+            ("- **粗体**", "- **体**", 2),
+            ("> **粗体**", "> **体**", 2),
+            ("- [ ] **粗体**", "- [ ] **体**", 19),
+        ]:
+            load(page, source + "\n")
+            click_block_left(page, dx=dx)
+            page.keyboard.press("Delete")
+            page.wait_for_timeout(120)
+            assert markdown(page) == expected + "\n", (source, markdown(page))
+            cases.append(f"相邻隐藏标记：{source.split(' ')[0]} 前缀 + Delete 只删可见字符")
+
+        # M1：ATX 闭合井号、Setext 下划线都算块尾标记，→ 不进入、退格不碰标记。
+        load(page, "## **粗体** ##")
+        strong = page.locator("#editor strong").first.bounding_box()
+        page.mouse.click(strong["x"] + strong["width"] - 1, strong["y"] + strong["height"] / 2)
+        page.wait_for_timeout(120)
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(80)
+        page.keyboard.insert_text("尾")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "## **粗体尾** ##", ("m1 atx", markdown(page))
+        cases.append("ATX 闭合井号：→ 停在可见末尾，输入落在闭合标记之前")
+        print("PASS", cases[-1], flush=True)
+
+        load(page, "标题 **粗**\n===")
+        strong = page.locator("#editor strong").first.bounding_box()
+        page.mouse.click(strong["x"] + strong["width"] - 1, strong["y"] + strong["height"] / 2)
+        page.wait_for_timeout(120)
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(80)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "标题 ****\n===", ("m1 setext", markdown(page))
+        underline = marker_state(page, "#editor .heading .setext-underline")
+        assert underline["text"] == "\n===", underline
+        cases.append("Setext 末尾：→ 后仍停在可见末尾，退格删可见字符且保留下划线")
+        print("PASS", cases[-1], flush=True)
+
+        # M2：点击被 .reveal 展开的标记后，光标不允许停在标记内部；输入/IME 都写不进标记。
+        load(page, "**粗体**\n")
+        strong = page.locator("#editor strong").first.bounding_box()
+        page.mouse.click(strong["x"] + 1, strong["y"] + strong["height"] / 2)
+        page.wait_for_timeout(150)
+        reveal = page.locator("#editor .syntax.reveal").first
+        assert reveal.inner_text() == "**"
+        assert reveal.get_attribute("aria-hidden") == "false"
+        rbox = reveal.bounding_box()
+        page.mouse.click(rbox["x"] + rbox["width"] / 2, rbox["y"] + rbox["height"] / 2)
+        page.wait_for_timeout(150)
+        assert page.evaluate("() => window.inkstoneGetSelection()") == {"a": 0, "f": 0}
+        page.keyboard.insert_text("甲")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "甲**粗体**\n", ("m2", markdown(page))
+        cases.append("点击展开的标记：光标吸附到标记外，输入不写进标记内部")
+        print("PASS", cases[-1], flush=True)
+
+        # M3：从展开的标记内部拖到行尾，起点向外吸附，替换不会留下半截标记。
+        load(page, "**粗体**\n")
+        strong = page.locator("#editor strong").first.bounding_box()
+        page.mouse.click(strong["x"] + 1, strong["y"] + strong["height"] / 2)
+        page.wait_for_timeout(350)
+        rbox = page.locator("#editor .syntax.reveal").first.bounding_box()
+        y = rbox["y"] + rbox["height"] / 2
+        page.mouse.move(rbox["x"] + rbox["width"] / 2, y)
+        page.wait_for_timeout(80)
+        page.mouse.down()
+        page.mouse.move(strong["x"] + strong["width"] + 30, y, steps=10)
+        page.mouse.up()
+        page.wait_for_timeout(150)
+        assert page.evaluate("() => window.inkstoneGetSelection()") == {"a": 0, "f": 6}
+        page.keyboard.insert_text("甲")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "甲\n", ("m3", markdown(page))
+        cases.append("标记内起点的拖选：端点吸附到标记外，替换后不留半截标记")
+        print("PASS", cases[-1], flush=True)
+
+        # Setext 下划线不再随光标显示，但必须仍可查看与修改（等价覆盖）：源文视图里可编辑。
+        load(page, "标题\n===")
+        blur(page)
+        page.locator("#source-toggle").click()
+        source = page.locator("#source")
+        assert source.input_value() == "标题\n==="
+        page.evaluate(
+            """() => {
+              const s = document.getElementById('source');
+              s.focus();
+              s.setSelectionRange(s.value.length, s.value.length);
+            }"""
+        )
+        page.keyboard.insert_text("=")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "标题\n====", markdown(page)
+        page.locator("#source-toggle").click()
+        page.wait_for_timeout(120)
+        underline = marker_state(page, "#editor .heading .setext-underline")
+        assert underline["text"] == "\n====", underline
+        cases.append("Setext 下划线仍可查看与修改（源文视图编辑后回到隐藏标记）")
+        print("PASS", cases[-1], flush=True)
+
 
         load(page, "AT&amp;T\n===")
         blur(page)
