@@ -33,6 +33,9 @@ let future = [];
 let lastEdit = 0;
 let lastKind = '';
 let beforeSelection = null;
+// Ctrl/⌘+A 选不到 display:none 的块级标记，浏览器只给出可见区间；
+// 这里记下模型层的整篇区间，让紧接着的输入/删除/复制按原文处理。
+let selectAllSelection = null;
 let renderTimer;
 let persistTimer;
 let toastTimer;
@@ -43,6 +46,11 @@ let findIndex = -1;
 let findSignature = '';
 let namingNew = false;
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// 块级标记（#、Setext 下划线、列表/任务/引用前缀、脚注定义前缀）不参与「光标激活即显示源码」：
+// 它们与正文不在同一文本流里，展开只会让整行文字横移。行内标记另由 .reveal 控制。
+// 空内容块（刚敲完 "## "、列表回车产生的新项）例外：此时标记是块内唯一的文本，
+// 藏起来会让光标无处可落、输入被插到标记之前，因此用 .pending 保持可见，直到有正文。
+const blockMarker = (value, extra = '', pending = false) => `<span class="syntax block-marker${pending ? ' pending' : ''}${extra}">${esc(value)}</span>`;
 
 function text() { return serialize(blocks); }
 function toast(message) {
@@ -92,13 +100,23 @@ function locate(position) {
 function domPoint(pos) {
   const { block, offset } = locate(pos);
   const el = [...editor.children].find((n) => n.dataset.id === block.id);
-  let remaining = offset;
-  const walker = document.createTreeWalker(el.querySelector('.block-source') || el, NodeFilter.SHOW_TEXT);
+  const root = el.querySelector('.block-source') || el;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  // 隐藏的标记没有可见位置：光标落在其中时贴到相邻可见文本，避免 Chromium 把
+  // 选区放进 display:none 的节点后悄悄跳回块首（表现为刚输入的字符插到错误位置）。
+  let at = 0;
   let node;
+  let lastVisible = null;
   while ((node = walker.nextNode())) {
-    if (remaining <= node.length) return [node, remaining];
-    remaining -= node.length;
+    const host = node.parentElement?.closest('.syntax');
+    const hidden = host && !host.classList.contains('reveal') && !host.classList.contains('pending');
+    if (!hidden) {
+      if (offset <= at + node.length) return [node, Math.max(0, offset - at)];
+      lastVisible = node;
+    }
+    at += node.length;
   }
+  if (lastVisible) return [lastVisible, lastVisible.length];
   return [el, el.childNodes.length];
 }
 function restore(sel, focus = true) {
@@ -169,8 +187,9 @@ function decorate(block) {
   }
   if (block.type === 'footnoteDef') {
     const { prefix, body, number } = footnoteDefParts(block);
-    if (!number) return esc(prefix) + renderInline(body, doc);
-    return `<span class="syntax">${esc(prefix)}</span>${footnoteBack(number)}` + renderInline(body, doc);
+    const html = renderInline(body, doc);
+    if (!number) return esc(prefix) + html;
+    return `${blockMarker(prefix, '', html === '')}${footnoteBack(number)}` + html;
   }
   if (block.type === 'linkDef') {
     const { prefix, url, suffix } = linkDefParts(block);
@@ -179,10 +198,12 @@ function decorate(block) {
   }
   if (block.type === 'heading') {
     const { content, prefix, suffix, underline } = headingParts(block);
-    return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') +
-      renderInline(content, doc) +
-      (suffix ? `<span class="syntax">${esc(suffix)}</span>` : '') +
-      (underline !== null ? `<span class="syntax setext-underline">\n${esc(underline)}</span>` : '');
+    const body = renderInline(content, doc);
+    const pending = body === '';
+    return (prefix ? blockMarker(prefix, '', pending) : '') +
+      body +
+      (suffix ? blockMarker(suffix, '', pending) : '') +
+      (underline !== null ? blockMarker(`\n${underline}`, ' setext-underline') : '');
   }
   let prefix = '';
   if (block.type === 'list') prefix = raw.match(/^\s*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '';
@@ -191,9 +212,11 @@ function decorate(block) {
   if (task) {
     prefix = task[0];
     const checked = task[2].toLowerCase() === 'x';
-    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length), doc)}</span>`;
+    const body = renderInline(raw.slice(prefix.length), doc);
+    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button>${blockMarker(prefix, '', body === '')}<span class="task-body">${body}</span>`;
   }
-  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length), doc);
+  const body = renderInline(raw.slice(prefix.length), doc);
+  return (prefix ? blockMarker(prefix, '', body === '') : '') + body;
 }
 function render(sel = null) {
   doc = buildDocContext(blocks);
@@ -342,12 +365,39 @@ function retryImage(box) {
   enhanceImages(box.closest('.block-preview') || editor);
 }
 
+// 行内标记只在光标所在或紧邻的那一处展开；块级标记（.block-marker）永不展开。
+// 展开只改类名与 CSS，不动 DOM 文本，readBlock()/locate() 的字节映射保持逐字对齐。
+function revealInlineMarkers() {
+  editor.querySelectorAll('.syntax.reveal').forEach((span) => span.classList.remove('reveal'));
+  if (sourceMode || document.activeElement !== editor) return;
+  const s = selection();
+  if (!s) return;
+  const focus = locate(s.f);
+  const el = [...editor.children].find((node) => node.dataset.id === focus.block.id);
+  // 富块整块切换 .block-source，不参与行内展开。
+  if (!el || el.classList.contains('rich-block')) return;
+  const offsets = [focus.offset];
+  if (s.a !== s.f) {
+    const anchor = locate(s.a);
+    if (anchor.block.id === focus.block.id) offsets.push(anchor.offset);
+  }
+  let at = 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const end = at + node.textContent.length;
+    const span = node.parentElement?.closest('.syntax');
+    if (span && !span.classList.contains('block-marker') && offsets.some((offset) => offset >= at && offset <= end)) span.classList.add('reveal');
+    at = end;
+  }
+}
 function updateActive() {
   const previous = lastActiveId;
   [...editor.children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
   [...$('outline').children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
   if (previous && previous !== activeId) refreshCodePreview(previous);
   lastActiveId = activeId;
+  revealInlineMarkers();
 }
 function updateUI() {
   const value = text();
@@ -432,7 +482,7 @@ function replace(start, end, value, cursor = start + value.length, kind = 'comma
   apply(old.slice(0, start) + value + old.slice(end), { a: cursor, f: cursor }, kind);
 }
 function range() {
-  const sel = selection() || beforeSelection || { a: text().length, f: text().length };
+  const sel = (selectAllSelection && selectAllSelection.model) || selection() || beforeSelection || { a: text().length, f: text().length };
   return { ...sel, start: Math.min(sel.a, sel.f), end: Math.max(sel.a, sel.f) };
 }
 function undo(redo = false) {
@@ -553,6 +603,65 @@ function enter(soft = false) {
 }
 function resizeSource() { source.style.height = 'auto'; source.style.height = `${Math.max(source.scrollHeight, 350)}px`; }
 
+// 隐藏标记是零字号文本（不用 display:none）：Chromium 的原生退格遇到 display:none
+// 的内联节点会把「整段隐藏标记 + 前一个可见字符」一起删掉。代价是 Home/方向键仍能把
+// 光标放进零字号文本，输入会写进标记内部（"X## 标题"），这里把插入点挪到标记之后。
+function skipHiddenMarker(p, includeStart = false) {
+  const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+  if (!el || el.classList.contains('rich-block')) return p;
+  let at = 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const end = at + node.textContent.length;
+    const span = node.parentElement?.closest('.syntax');
+    if (span && !span.classList.contains('reveal') && !span.classList.contains('pending') && p.offset < end && p.offset >= at &&
+      (includeStart || p.offset > at || (at === 0 && span.classList.contains('block-marker')))) {
+      return { ...p, offset: end };
+    }
+    at = end;
+  }
+  return p;
+}
+// 块首退格＝删掉块级前缀并把该块降为正文，不删字符、不并入上一块。
+// 前缀与正文都来自 classify()/headingParts() 已有的解析结果，这里只做序列化拼接；
+// 带缩进的列表项先减少一级缩进（复用 Shift+Tab 的 indentSelection），再按块首处理。
+function demoteAtStart(p, blockStart) {
+  const block = p.block, raw = block.raw;
+  if (block.type === 'heading') {
+    const parts = headingParts(block);
+    if (parts.underline !== null) {
+      if (p.offset > 0) return false;
+      replace(blockStart, blockStart + raw.length, parts.content, blockStart, 'command');
+      return true;
+    }
+    if (!parts.prefix || p.offset > parts.prefix.length) return false;
+    replace(blockStart, blockStart + raw.length, parts.content, blockStart, 'command');
+    return true;
+  }
+  if (block.type === 'list') {
+    const task = raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[[ xX]\]\s/);
+    const prefix = task ? task[0] : (raw.match(/^\s*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '');
+    if (!prefix || p.offset > prefix.length) return false;
+    if (block.indent > 0) { indentSelection(true); return true; }
+    replace(blockStart, blockStart + raw.length, raw.slice(prefix.length), blockStart, 'command');
+    return true;
+  }
+  if (block.type === 'quote') {
+    const prefix = raw.match(/^ {0,3}> ?/)?.[0] || '';
+    if (!prefix || p.offset > prefix.length) return false;
+    // 多行引用一次去掉每行的引用标记，避免部分行留成引用块。
+    replace(blockStart, blockStart + raw.length, raw.replace(/^ {0,3}>[ \t]?/gm, ''), blockStart, 'command');
+    return true;
+  }
+  if (block.type === 'footnoteDef') {
+    const { prefix, body } = footnoteDefParts(block);
+    if (!prefix || p.offset > prefix.length) return false;
+    replace(blockStart, blockStart + raw.length, body, blockStart, 'command');
+    return true;
+  }
+  return false;
+}
 editor.addEventListener('beforeinput', (event) => {
   beforeSelection = selection();
   if (composing || event.isComposing) return;
@@ -561,8 +670,29 @@ editor.addEventListener('beforeinput', (event) => {
   else if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { event.preventDefault(); undo(event.inputType === 'historyRedo'); }
   else if (s.start !== s.end && ['insertText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut'].includes(event.inputType)) {
     event.preventDefault(); replace(s.start, s.end, event.inputType === 'insertText' ? event.data || '' : '', undefined, 'typing');
+  } else if (event.inputType === 'insertText' && event.data) {
+    // 光标停在零宽标记里（Home/方向键）时，把输入挪到标记之后，避免写进 "## " 内部。
+    const p = locate(s.start);
+    const to = skipHiddenMarker(p);
+    if (to.offset !== p.offset) {
+      event.preventDefault();
+      const pos = s.start - p.offset + to.offset;
+      replace(pos, pos, event.data, undefined, 'typing');
+    }
   } else if (event.inputType === 'deleteContentBackward' || event.inputType === 'deleteContentForward') {
     const p = locate(s.start);
+    if (event.inputType === 'deleteContentBackward') {
+      if (demoteAtStart(p, s.start - p.offset)) { event.preventDefault(); return; }
+    } else {
+      // 前向删除落在零宽标记里时，跳过标记去删第一个可见字符；没有可见字符就什么也不做。
+      const to = skipHiddenMarker(p, true);
+      if (to.offset !== p.offset) {
+        event.preventDefault();
+        const pos = s.start - p.offset + to.offset;
+        if (pos < s.start - p.offset + p.block.raw.length) replace(pos, pos + 1, '', undefined, 'typing');
+        return;
+      }
+    }
     if ((event.inputType === 'deleteContentBackward' && p.offset === 0 && s.start > 0) || (event.inputType === 'deleteContentForward' && p.offset === p.block.raw.length && s.start < text().length)) {
       event.preventDefault();
       const backward = event.inputType === 'deleteContentBackward';
@@ -717,11 +847,88 @@ function indentSelection(outdent = false) {
       apply(value.slice(0, start) + body + value.slice(end), { a: Math.max(start, s.start + shiftA), f: Math.max(start, s.end + shiftF) });
     } else if (!outdent) replace(s.start, s.end, '  ');
 }
+// 隐藏标记不占可见位置：方向键一步跨过整段标记，Home 落到可见起点，
+// 否则零宽标记会变成一串「看不见的光标停顿」。
+function hiddenSpanAt(p, forward) {
+  const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+  if (!el || el.classList.contains('rich-block')) return null;
+  let at = 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const end = at + node.textContent.length;
+    const span = node.parentElement?.closest('.syntax');
+    if (span && !span.classList.contains('reveal') && !span.classList.contains('pending') &&
+      (forward ? (p.offset >= at && p.offset < end) : (p.offset > at && p.offset <= end))) {
+      return { at, end };
+    }
+    at = end;
+  }
+  return null;
+}
+function leadingHiddenMarker(el) {
+  if (!el) return 0;
+  for (const child of el.childNodes) {
+    if (child.nodeType === Node.TEXT_NODE && child.textContent) return 0;
+    if (child.nodeType !== Node.ELEMENT_NODE) continue;
+    if (child.classList.contains('task-box')) continue; // 复选框按钮不占文本位置
+    if (child.classList.contains('block-marker') && !child.classList.contains('pending') && !child.classList.contains('reveal')) return child.textContent.length;
+    return 0;
+  }
+  return 0;
+}
 editor.addEventListener('keydown', (event) => {
   if (composing || event.isComposing || event.keyCode === 229) return;
+  if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    const s = selection();
+    if (s && s.a === s.f) {
+      const p = locate(s.f);
+      // 从上一块右移进来时，浏览器会把光标停在零宽前缀的字符中间；直接落到可见起点。
+      if (event.key === 'ArrowRight' && p.offset === p.block.raw.length && s.f + 1 <= text().length) {
+        const next = locate(s.f + 1);
+        if (next.block.id !== p.block.id) {
+          const el = [...editor.children].find((n) => n.dataset.id === next.block.id);
+          const skip = leadingHiddenMarker(el);
+          if (skip) {
+            event.preventDefault();
+            const pos = s.f + 1 - next.offset + skip;
+            restore({ a: pos, f: pos });
+            return;
+          }
+        }
+      }
+      const hit = hiddenSpanAt(p, event.key === 'ArrowRight');
+      if (hit) {
+        event.preventDefault();
+        const blockStart = s.f - p.offset;
+        let pos = null;
+        if (event.key === 'ArrowRight') pos = blockStart + hit.end;
+        else if (hit.at > 0) pos = blockStart + hit.at;
+        else if (blockStart > 0) pos = blockStart - 1; // 标记在块首：直接退到上一块
+        if (pos !== null) restore({ a: pos, f: pos });
+        return;
+      }
+    }
+  }
+  if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && event.key === 'Home') {
+    const s = selection();
+    if (s && s.a === s.f) {
+      const p = locate(s.f);
+      const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+      const skip = leadingHiddenMarker(el);
+      if (skip) {
+        event.preventDefault();
+        const pos = s.f - p.offset + skip;
+        restore({ a: pos, f: pos });
+        return;
+      }
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
     event.preventDefault();
-    restore({ a: 0, f: text().length });
+    const all = { a: 0, f: text().length };
+    restore(all);
+    selectAllSelection = { model: all, dom: selection() };
     return;
   }
   if (event.key === 'Tab') {
@@ -744,12 +951,13 @@ document.addEventListener('selectionchange', () => {
   if (composing || sourceMode || document.activeElement !== editor) return;
   const s = selection();
   if (!s) return;
+  if (selectAllSelection && (s.a !== selectAllSelection.dom.a || s.f !== selectAllSelection.dom.f)) selectAllSelection = null;
   beforeSelection = s;
   activeId = locate(s.f).block.id;
   updateActive();
 });
 editor.addEventListener('blur', () => {
-  if (!composing) { activeId = null; updateActive(); }
+  if (!composing) { activeId = null; selectAllSelection = null; updateActive(); }
 });
 document.querySelectorAll('[data-command]').forEach((button) => {
   button.addEventListener('pointerdown', (event) => { beforeSelection = selection() || beforeSelection; event.preventDefault(); });

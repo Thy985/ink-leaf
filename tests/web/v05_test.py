@@ -105,6 +105,17 @@ with sync_playwright() as playwright:
         cases.append("脚注定义成为独立块并显示序号与回链")
         print("PASS", cases[-1], flush=True)
 
+        # 块首退格把脚注定义降为正文（删前缀、留正文），且一步可撤销。
+        caret(page, 4, 0)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "正文[^note]\n\n段落二\n\n说明文字\n", markdown(page)
+        page.keyboard.press("Control+z")
+        page.wait_for_timeout(120)
+        assert markdown(page) == raw, markdown(page)
+        cases.append("块首退格降级：脚注定义，可撤销")
+        print("PASS", cases[-1], flush=True)
+
         # --- reference renders as a superscript anchor ---
         assert page.locator('#editor sup a[href="#ink-fn-1"]').count() == 1
         assert page.evaluate(
@@ -113,6 +124,15 @@ with sync_playwright() as playwright:
         assert page.locator("#editor sup.fn-ref a").bounding_box()["width"] > 0
         assert page.locator("#editor .paragraph .syntax").first.is_hidden()
         cases.append("脚注引用显示为角标数字")
+
+        # 行内标记只在光标所在/紧邻处展开，离开即收回。
+        caret(page, 0, len("正文[^note]"))
+        page.wait_for_timeout(80)
+        assert page.locator("#editor .paragraph .syntax.reveal").count() == 1
+        caret(page, 0, 1)
+        page.wait_for_timeout(80)
+        assert page.locator("#editor .paragraph .syntax.reveal").count() == 0
+        cases.append("脚注引用标记仅紧邻处展开")
         print("PASS", cases[-1], flush=True)
 
         # --- the generated number must not shift caret mapping ---
@@ -143,16 +163,16 @@ with sync_playwright() as playwright:
         cases.append("回链跳回引用所在块")
         print("PASS", cases[-1], flush=True)
 
-        # --- definition block is editable in place (non-rich blocks reveal their syntax) ---
+        # --- definition block is editable in place; its block marker never reveals ---
         assert [b["type"] for b in blocks(page)][4] == "footnoteDef"
         caret(page, 4)
         assert page.locator("#editor .footnote-def.active").count() == 1
-        assert page.locator("#editor .footnote-def .syntax").first.is_visible()
-        assert "[^note]: " in page.locator("#editor .footnote-def").inner_text()
+        assert page.locator("#editor .footnote-def .block-marker").first.text_content() == "[^note]: "
+        assert page.locator("#editor .footnote-def .syntax").first.is_hidden()
         blur(page)
         assert page.locator("#editor .footnote-def .syntax").first.is_hidden()
         assert markdown(page) == raw
-        cases.append("点击脚注定义可编辑原文且无损")
+        cases.append("脚注定义前缀常隐且块内容可编辑")
         print("PASS", cases[-1], flush=True)
 
         # --- unpaired and escaped references stay literal ---

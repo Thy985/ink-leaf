@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 from playwright.sync_api import sync_playwright
-from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains, visible_text
 
 ROOT = Path(__file__).resolve().parents[2]
 URL = os.environ.get("INKSTONE_WEB_URL", "http://127.0.0.1:4173/")
@@ -181,15 +181,15 @@ with sync_playwright() as playwright:
         load(page, raw)
         blur(page)
         assert page.locator("#editor .heading").count() == 2
-        assert page.locator("#editor .heading").nth(0).inner_text() == "标题"
+        assert visible_text(page.locator("#editor .heading").nth(0)) == "标题"
         assert page.locator("#outline button").nth(0).inner_text() == "标题"
         assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
         assert markdown(page) == raw
         page.locator("#editor .heading").nth(0).click()
-        # Block activation applies asynchronously; give it a beat before asserting visibility.
+        # 块级标记（含 Setext 下划线）不再随光标展开；激活只影响富块与行内标记。
         page.wait_for_timeout(80)
-        assert page.locator("#editor .heading .setext-underline").nth(0).is_visible()
-        cases.append("Setext 标题显示、大纲与下划线激活")
+        assert page.locator("#editor .heading .setext-underline").nth(0).is_hidden()
+        cases.append("Setext 标题显示、大纲正常，下划线激活后仍隐藏")
         print("PASS", cases[-1], flush=True)
 
         load(page, "段落\n---\n\n---\n")
@@ -251,10 +251,102 @@ with sync_playwright() as playwright:
 
         load(page, "## 标题 ##")
         blur(page)
-        assert page.locator("#editor .heading").inner_text() == "标题"
+        assert visible_text(page.locator("#editor .heading")) == "标题"
         assert page.locator("#outline button").inner_text() == "标题"
         assert markdown(page) == "## 标题 ##"
         cases.append("ATX 闭合井号显示与大纲")
+
+        # 块级前缀永不随光标展开；行内标记只在光标所在/紧邻处展开。
+        load(page, "## 标题 **粗体** 尾\n")
+        blur(page)
+        heading = page.locator("#editor .heading")
+        assert heading.locator(".block-marker").first.is_hidden()
+        caret(page, 0, len("## 标题 "))
+        page.wait_for_timeout(80)
+        assert heading.locator(".block-marker").first.is_hidden()
+        assert heading.locator(".syntax.reveal").count() == 1
+        assert heading.locator(".syntax.reveal").first.inner_text() == "**"
+        caret(page, 0, len("## 标题 **粗体"))
+        page.wait_for_timeout(80)
+        assert heading.locator(".syntax.reveal").count() == 1
+        assert heading.locator(".syntax.reveal").first.inner_text() == "**"
+        caret(page, 0, len("## 标题 **粗"))
+        page.wait_for_timeout(80)
+        assert heading.locator(".syntax.reveal").count() == 0
+        assert heading.locator(".block-marker").first.is_hidden()
+        assert markdown(page) == "## 标题 **粗体** 尾\n"
+        cases.append("块级前缀常隐、行内标记仅紧邻处展开")
+
+        # 块首退格＝删块级前缀并降为正文：不删字符、不合并上一块，且一步可撤销。
+        demote = [
+            ("## 标题 ##", "标题", "ATX 标题（含闭合井号）"),
+            ("- 无序项", "无序项", "无序列表"),
+            ("1. 有序项", "有序项", "有序列表"),
+            ("- [ ] 任务项", "任务项", "任务列表"),
+            ("> 引用行", "引用行", "引用"),
+        ]
+        for source, expected, label in demote:
+            load(page, "上一段\n\n" + source + "\n")
+            caret(page, 2, 0)  # 隐藏前缀之前的位置
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(120)
+            assert markdown(page) == "上一段\n\n" + expected + "\n", (label, markdown(page))
+            page.keyboard.press("Control+z")
+            page.wait_for_timeout(120)
+            assert markdown(page) == "上一段\n\n" + source + "\n", (label, "undo", markdown(page))
+            cases.append(f"块首退格降级：{label}，可撤销")
+            print("PASS", cases[-1], flush=True)
+
+        # 光标落在隐藏前缀之后的可见起点（Home/点击落点），同样触发降级。
+        load(page, "## 标题\n")
+        caret(page, 0, len("## "))
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "标题\n", markdown(page)
+        cases.append("块首退格：可见起点同样降级")
+
+        # 块内容中部退格仍是普通删字符，不触发降级。
+        load(page, "## 标题\n")
+        caret(page, 0, len("## 标"))
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "## 题\n", markdown(page)
+        cases.append("块中部退格不触发降级")
+
+        # Setext 标题删掉下划线行，正文保留。
+        load(page, "标题\n===\n")
+        caret(page, 0, 0)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "标题\n", markdown(page)
+        cases.append("块首退格降级：Setext 标题")
+
+        # 空内容块（只有 pending 前缀）降级后不留悬空前缀。
+        load(page, "## \n")
+        caret(page, 0, 0)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert "##" not in markdown(page) and markdown(page).strip() == "", markdown(page)
+        cases.append("块首退格降级：空标题不留悬空前缀")
+
+        # 缩进列表项先降一级缩进，再删标记降为正文。
+        load(page, "- 父项\n\n  - 子项\n")
+        caret(page, 2, 0)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "- 父项\n\n- 子项\n", markdown(page)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "- 父项\n\n子项\n", markdown(page)
+        cases.append("块首退格降级：缩进列表先减缩进再降级")
+
+        # 普通段落行首退格仍是合并上一块，既有行为不被改坏。
+        load(page, "甲\n\n乙\n")
+        caret(page, 2, 0)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "甲\n乙\n", markdown(page)
+        cases.append("普通段落行首退格仍合并上一块")
         print("PASS", cases[-1], flush=True)
 
         load(page, "AT&amp;T\n===")

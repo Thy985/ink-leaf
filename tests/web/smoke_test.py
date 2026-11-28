@@ -3,7 +3,7 @@ from pathlib import Path
 import json
 import os
 from playwright.sync_api import sync_playwright
-from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains
+from inktest import app_ready, load as ink_load, markdown_settled, markdown_contains, visible_text
 
 ROOT = Path(__file__).resolve().parents[2] / 'test-results' / 'web'
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -171,7 +171,7 @@ with sync_playwright() as p:
     page.locator('#source').fill('# 源码\n\n**保留**\n')
     assert markdown() == '# 源码\n\n**保留**\n'
     page.locator('#source-toggle').click()
-    assert page.locator('#editor .heading').inner_text() == '源码'
+    assert visible_text(page.locator('#editor .heading')) == '源码'
     # Headless Chromium exposes the File System Access API but aborts real pickers, so stub a
     # writable handle and verify the FSA save path writes the same bytes a download would.
     page.evaluate('''() => {
