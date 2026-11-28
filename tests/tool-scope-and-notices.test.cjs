@@ -102,8 +102,13 @@ test('I3: 未知 scope 被拒绝', async () => {
 
 test('I3: 越界 folder 仍被拒绝（回归）', async () => {
   const { tools: t } = await tools();
-  const { registry } = t.createTools({ folders: ['C:\\Docs'] });
-  const verdict = await t.guard('search_folder', { query: 'x', folder: 'C:\\Windows' }, registry);
+  // 用当前平台的绝对路径，不能在测试里写死 C:\ ——Linux 上 path.isAbsolute 会把它
+  // 判成相对路径，roots 被过滤成空，拒绝原因变成「缺少已导入文件夹」而不是范围检查，
+  // 断言就会假失败（CI Ubuntu 上已踩到一次）。
+  const root = path.join(path.sep, 'inkstone-imported');
+  const outside = path.join(path.sep, 'somewhere-else');
+  const { registry } = t.createTools({ folders: [root] });
+  const verdict = await t.guard('search_folder', { query: 'x', folder: outside }, registry);
   assert.strictEqual(verdict.ok, false);
   assert.match(verdict.reason, /只能检索已在墨页中导入的文件夹/);
 });
