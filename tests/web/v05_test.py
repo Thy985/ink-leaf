@@ -143,14 +143,19 @@ with sync_playwright() as playwright:
         cases.append("回链跳回引用所在块")
         print("PASS", cases[-1], flush=True)
 
-        # --- definition block is editable in place (non-rich blocks reveal their syntax) ---
+        # --- definition block is editable in place ---
+        # issue #52: block prefixes (`## `, `- `) are decorations, but a footnote definition's
+        # `[^label]: ` is an inline source marker (its number is generated content), so it stays
+        # readable while the definition is being edited.
         assert [b["type"] for b in blocks(page)][4] == "footnoteDef"
         caret(page, 4)
         assert page.locator("#editor .footnote-def.active").count() == 1
         assert page.locator("#editor .footnote-def .syntax").first.is_visible()
-        assert "[^note]: " in page.locator("#editor .footnote-def").inner_text()
+        assert "[^note]: " in page.locator("#editor .footnote-def").text_content()
         blur(page)
-        assert page.locator("#editor .footnote-def .syntax").first.is_hidden()
+        # The definition prefix stays readable: its number is generated content, and hiding it
+        # would hide the anchor the reader clicks.
+        assert page.locator("#editor .footnote-def .syntax").first.is_visible()
         assert markdown(page) == raw
         cases.append("点击脚注定义可编辑原文且无损")
         print("PASS", cases[-1], flush=True)
