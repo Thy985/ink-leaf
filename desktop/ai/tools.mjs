@@ -19,11 +19,6 @@ const MAX_RESULTS = 12;
 const MAX_RESULTS_PER_FILE = 2;
 const MAX_CONTEXT_CHARS = 300;
 
-// 能改变「读哪里」的参数名。scope='document' 的工具一旦出现这些字段，
-// guard 会拒绝——因为它的范围复核只假定「读当前文档」，多一个目标参数
-// 就等于多一条未经复核的读取路径。
-const SCOPE_CHANGING_PARAMS = new Set(['folder', 'path', 'file', 'filepath', 'docId', 'documentId', 'root', 'dir', 'dirname']);
-
 // 已导入文件夹解析：只接受 session 里登记过的绝对路径。
 // 模型给的名字不可信，绝不能让它在任意磁盘位置检索。
 // Windows 路径大小写不敏感，且盘符可能有 \\?\ 前缀，所以比较前统一规范化：
@@ -223,14 +218,22 @@ export function createTools({ folders: roots = [], io, document: currentDocument
 // 实测确认 SDK 不会在调用 execute 前替我们校验工具名与参数（探针：非法参数会原样传到 execute），
 // 所以这里是唯一一道拦得住不可信模型输入的关口，不能只靠 run() 内部自觉。
 //
-// 范围复核（H1 复审 I3）：每个工具都必须声明 scope，guard 按声明统一复核。
-// 早先只有「带 folder 参数 + 有 roots」的工具才会被复核，search_document 这类
-// 靠闭包自保的工具不在复核范围内——当前安全，但任何人给它加个 path/docId 参数，
-// guard 都不会拦，而注释却写着它是安全钩子。现在：
-//   scope='folders'  必须提供 roots，folder 参数（若有）必须落在其中
-//   scope='document' 必须确实有当前文档，且 schema 不得出现任何路径/文档标识字段
-//   scope='none'     不读用户数据
-// 声明与实现不符时 guard 直接拒绝，而不是放行。
+// 范围复核（H1 复审 I3）：每个工具必须显式声明 scope，guard 按声明复核。
+// 早先只有「带 folder 参数 + 有 roots」的工具会被复核，search_document 这类
+// 靠闭包自保的工具不在复核范围内——当前安全，但任何人给它加个路径参数，
+// guard 都不会拦，而注释却写着它是安全钩子。
+//
+// 要点：
+// 1. **没有 scope 声明就拒绝**，不设默认值。「漏写声明」必须是显式错误，
+//    而不是悄悄落到最宽松的分支——那等于把安全默认值调反（复审 finding 4）。
+// 2. scope='document' 用**白名单**复核参数：只有该 scope 允许的字段能出现，
+//    其余一律拒绝。黑名单（列举 path/folder/docId…）挡不住 source/uri/name
+//    这类同义字段，等于给未来留了绕过口（复审 finding 3）。
+const SCOPE_RULES = Object.freeze({
+  folders: { allowedParams: ['query', 'folder', 'regex', 'title', 'broken'] },
+  document: { allowedParams: ['query'] },
+});
+
 export async function guard(toolName, args, registry) {
   if (typeof toolName !== 'string' || !Object.prototype.hasOwnProperty.call(registry, toolName)) {
     return { ok: false, reason: `不在允许列表内的工具：${toolName}` };
@@ -239,36 +242,29 @@ export async function guard(toolName, args, registry) {
   const checked = validate(spec.schema, args);
   if (!checked.ok) return { ok: false, reason: checked.reason };
 
-  const scope = spec.scope || 'none';
+  const rule = SCOPE_RULES[spec.scope];
+  if (!rule) {
+    return { ok: false, reason: `工具范围未声明或不可识别：${spec.scope || '(缺失)'}` };
+  }
+
+  // 白名单复核：schema 里出现的每个参数都必须是该 scope 允许的。
   const declaredProps = Object.keys(spec.schema?.properties || {});
-
-  if (scope === 'folders') {
-    if (!Array.isArray(spec.roots)) {
-      return { ok: false, reason: '工具范围声明与实现不符：缺少已导入文件夹' };
-    }
-    if (checked.value.folder !== undefined) {
-      const resolved = resolveRoot(checked.value.folder, spec.roots);
-      if (!resolved.ok) return { ok: false, reason: resolved.reason };
-    }
-    return { ok: true, value: checked.value };
+  const unexpected = declaredProps.filter((key) => !rule.allowedParams.includes(key));
+  if (unexpected.length) {
+    return { ok: false, reason: `工具范围声明与实现不符：${spec.scope} 范围不应接受参数 ${unexpected.join('、')}` };
   }
 
-  if (scope === 'document') {
-    if (!spec.hasDocument) {
-      return { ok: false, reason: '工具范围声明与实现不符：没有可用的当前文档' };
-    }
-    // 只读当前文档的工具不该接受任何能改变读取目标的参数。
-    // 一旦有人加了 path / docId / folder 之类字段，这里会拦下并提示去补范围复核逻辑，
-    // 而不是让一个未经复核的参数悄悄生效。
-    const leaked = declaredProps.filter((key) => SCOPE_CHANGING_PARAMS.has(key));
-    if (leaked.length) {
-      return { ok: false, reason: `工具范围声明与实现不符：document 范围的工具不应接受参数 ${leaked.join('、')}` };
-    }
-    return { ok: true, value: checked.value };
+  if (spec.scope === 'folders' && !Array.isArray(spec.roots)) {
+    return { ok: false, reason: '工具范围声明与实现不符：缺少已导入文件夹' };
   }
-
-  if (scope !== 'none') {
-    return { ok: false, reason: `未知的工具范围声明：${scope}` };
+  if (spec.scope === 'document' && !spec.hasDocument) {
+    // 这属于接线错误，不是用户的操作问题；措辞要能让维护者看懂，
+    // 但也不能让最终用户以为是自己做错了什么（复审 finding 5）。
+    return { ok: false, reason: '本次没有可供检索的文档' };
+  }
+  if (checked.value.folder !== undefined) {
+    const resolved = resolveRoot(checked.value.folder, spec.roots);
+    if (!resolved.ok) return { ok: false, reason: resolved.reason };
   }
   return { ok: true, value: checked.value };
 }

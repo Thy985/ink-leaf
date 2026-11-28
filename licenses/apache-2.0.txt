@@ -199,3 +199,12 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+---------------------------------------------------------------------------
+注（墨页）：以上为 Apache License 2.0 官方全文，逐字未改（含 APPENDIX 的
+模板占位符 [yyyy] / [name of copyright owner]，因为是许可证模板本身）。
+本段说明不属于许可证正文，故置于全文之后。
+用途：为只在 package.json 声明 Apache-2.0、分发包却未附完整条款的上游包
+（ai、@ai-sdk/*、@workflow/serde 等）提供合规所需的完整许可证；
+各包自身的版权声明见 THIRD-PARTY-NOTICES.txt 中对应条目。
+---------------------------------------------------------------------------
