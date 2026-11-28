@@ -33,6 +33,9 @@ let future = [];
 let lastEdit = 0;
 let lastKind = '';
 let beforeSelection = null;
+// Ctrl/⌘+A 选不到 display:none 的块级标记，浏览器只给出可见区间；
+// 这里记下模型层的整篇区间，让紧接着的输入/删除/复制按原文处理。
+let selectAllSelection = null;
 let renderTimer;
 let persistTimer;
 let toastTimer;
@@ -43,6 +46,11 @@ let findIndex = -1;
 let findSignature = '';
 let namingNew = false;
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// 块级标记（#、Setext 下划线、列表/任务/引用前缀、脚注定义前缀）不参与「光标激活即显示源码」：
+// 它们与正文不在同一文本流里，展开只会让整行文字横移。行内标记另由 .reveal 控制。
+// 空内容块（刚敲完 "## "、列表回车产生的新项）例外：此时标记是块内唯一的文本，
+// 藏起来会让光标无处可落、输入被插到标记之前，因此用 .pending 保持可见，直到有正文。
+const blockMarker = (value, extra = '', pending = false) => `<span class="syntax block-marker${pending ? ' pending' : ''}${extra}">${esc(value)}</span>`;
 
 function text() { return serialize(blocks); }
 function toast(message) {
@@ -62,7 +70,7 @@ function point(node, offset) {
   let el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
   const block = el.closest('.block');
   if (!block) {
-    if (node === editor) return offset === 0 ? 0 : text().length;
+    if (node === editor) return offset === 0 ? 0 : currentText.length;
     return null;
   }
   if (el.closest('.block-preview')) return null;
@@ -71,7 +79,9 @@ function point(node, offset) {
   const range = document.createRange();
   range.selectNodeContents(block);
   try { range.setEnd(node, offset); } catch { return null; }
-  const prior = [...editor.children].slice(0, index).reduce((n, b) => n + readBlock(b).length + 1, 0);
+  // 前序块长度直接取模型 raw：DOM 文本与 raw 逐字对齐（readBlock 的字节契约），
+  // 但逐块 readBlock 会在每移动一格光标时重建字符串，这里是热路径。
+  const prior = blocks.slice(0, index).reduce((n, b) => n + b.raw.length + 1, 0);
   return prior + range.toString().length;
 }
 function selection() {
@@ -82,23 +92,38 @@ function selection() {
   return a === null || f === null ? null : { a, f };
 }
 function locate(position) {
-  let n = Math.max(0, Math.min(position, text().length));
+  // 用 currentText 而不是每次 serialize(blocks)：selectionchange 每次移动都会走到这里，
+  // 全文档序列化是光标移动成本里最贵的一环（currentText 在 apply()/storeDOM 里同步维护）。
+  let n = Math.max(0, Math.min(position, currentText.length));
   for (let i = 0; i < blocks.length; i++) {
     if (n <= blocks[i].raw.length || i === blocks.length - 1) return { block: blocks[i], offset: Math.min(n, blocks[i].raw.length), index: i };
     n -= blocks[i].raw.length + 1;
   }
   return { block: blocks[0], offset: 0, index: 0 };
 }
+function blockElement(id) {
+  return [...editor.children].find((node) => node.dataset.id === id) || null;
+}
 function domPoint(pos) {
   const { block, offset } = locate(pos);
   const el = [...editor.children].find((n) => n.dataset.id === block.id);
-  let remaining = offset;
-  const walker = document.createTreeWalker(el.querySelector('.block-source') || el, NodeFilter.SHOW_TEXT);
+  const root = el.querySelector('.block-source') || el;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  // 隐藏的标记没有可见位置：光标落在其中时贴到相邻可见文本，避免 Chromium 把
+  // 选区放进 display:none 的节点后悄悄跳回块首（表现为刚输入的字符插到错误位置）。
+  let at = 0;
   let node;
+  let lastVisible = null;
   while ((node = walker.nextNode())) {
-    if (remaining <= node.length) return [node, remaining];
-    remaining -= node.length;
+    const host = node.parentElement?.closest('.syntax');
+    const hidden = host && !host.classList.contains('reveal') && !host.classList.contains('pending');
+    if (!hidden) {
+      if (offset <= at + node.length) return [node, Math.max(0, offset - at)];
+      lastVisible = node;
+    }
+    at += node.length;
   }
+  if (lastVisible) return [lastVisible, lastVisible.length];
   return [el, el.childNodes.length];
 }
 function restore(sel, focus = true) {
@@ -169,8 +194,9 @@ function decorate(block) {
   }
   if (block.type === 'footnoteDef') {
     const { prefix, body, number } = footnoteDefParts(block);
-    if (!number) return esc(prefix) + renderInline(body, doc);
-    return `<span class="syntax">${esc(prefix)}</span>${footnoteBack(number)}` + renderInline(body, doc);
+    const html = renderInline(body, doc);
+    if (!number) return esc(prefix) + html;
+    return `${blockMarker(prefix, '', html === '')}${footnoteBack(number)}` + html;
   }
   if (block.type === 'linkDef') {
     const { prefix, url, suffix } = linkDefParts(block);
@@ -179,10 +205,12 @@ function decorate(block) {
   }
   if (block.type === 'heading') {
     const { content, prefix, suffix, underline } = headingParts(block);
-    return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') +
-      renderInline(content, doc) +
-      (suffix ? `<span class="syntax">${esc(suffix)}</span>` : '') +
-      (underline !== null ? `<span class="syntax setext-underline">\n${esc(underline)}</span>` : '');
+    const body = renderInline(content, doc);
+    const pending = body === '';
+    return (prefix ? blockMarker(prefix, '', pending) : '') +
+      body +
+      (suffix ? blockMarker(suffix, '', pending) : '') +
+      (underline !== null ? blockMarker(`\n${underline}`, ' setext-underline') : '');
   }
   let prefix = '';
   if (block.type === 'list') prefix = raw.match(/^\s*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '';
@@ -191,9 +219,11 @@ function decorate(block) {
   if (task) {
     prefix = task[0];
     const checked = task[2].toLowerCase() === 'x';
-    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button><span class="syntax">${esc(prefix)}</span><span class="task-body">${renderInline(raw.slice(prefix.length), doc)}</span>`;
+    const body = renderInline(raw.slice(prefix.length), doc);
+    return `<button class="task-box" contenteditable="false" tabindex="0" role="checkbox" aria-checked="${checked}" aria-label="切换任务完成状态" data-task="${block.id}"></button>${blockMarker(prefix, '', body === '')}<span class="task-body">${body}</span>`;
   }
-  return (prefix ? `<span class="syntax">${esc(prefix)}</span>` : '') + renderInline(raw.slice(prefix.length), doc);
+  const body = renderInline(raw.slice(prefix.length), doc);
+  return (prefix ? blockMarker(prefix, '', body === '') : '') + body;
 }
 function render(sel = null) {
   doc = buildDocContext(blocks);
@@ -208,6 +238,8 @@ function render(sel = null) {
       node.innerHTML = block.raw ? decorate(block) : '<br>';
       node._key = key;
       node._stale = block.type === 'code' && block.id === activeId;
+      node._layout = null;
+      syncMarkerAria(node);
     }
     node.className = `block ${TYPE_CLASS[block.type] || block.type}${needsPreview(block) ? ' rich-block' : ''}${block.id === activeId ? ' active' : ''}`;
     const indent = block.raw.match(/^[ \t]*/)[0].replaceAll('\t', '    ').length;
@@ -235,6 +267,8 @@ function refreshCodePreview(id) {
   node.innerHTML = decorate(block);
   node._key = blockKey(block);
   node._stale = false;
+  node._layout = null;
+  syncMarkerAria(node);
   enhanceImages(node);
 }
 
@@ -342,12 +376,93 @@ function retryImage(box) {
   enhanceImages(box.closest('.block-preview') || editor);
 }
 
+// 块内标记布局：一次 TreeWalker 得到每段 .syntax 的模型区间、是否隐藏、标记之后是否
+// 还有可见内容，以及块内最后一个可见字符的位置。render() 重建块 DOM 时 node._key 变化，
+// 缓存随之失效；selectionchange 每移一格只查这份缓存，不再重复序列化全文档、逐 span 量 rect。
+function blockLayout(el) {
+  if (!el || el.classList.contains('rich-block')) return null;
+  if (el._layout && el._layoutKey === el._key) return el._layout;
+  const markers = [];
+  const bySpan = new Map();
+  let at = 0;
+  let visibleEnd = 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const end = at + node.textContent.length;
+    const span = node.parentElement?.closest('.syntax') || null;
+    if (span) {
+      let marker = bySpan.get(span);
+      if (marker) marker.end = end;
+      else {
+        const next = span.nextElementSibling;
+        marker = {
+          span,
+          at,
+          end,
+          blockMarker: span.classList.contains('block-marker'),
+          pending: span.classList.contains('pending'),
+          // 零字号标记的 getClientRects() 同样非空，不能用 rect 判断「标记之后还有可见内容」：
+          // 只有非标记的兄弟元素（脚注角标、图片占位）才代表标记之后仍有可见内容。
+          generated: Boolean(next && !next.classList.contains('syntax')),
+        };
+        marker.hidden = !marker.pending;
+        bySpan.set(span, marker);
+        markers.push(marker);
+      }
+    }
+    if (!span || span.classList.contains('pending') || bySpan.get(span).generated) visibleEnd = end;
+    at = end;
+  }
+  const layout = { markers, visibleEnd, length: at };
+  el._layout = layout;
+  el._layoutKey = el._key;
+  return layout;
+}
+// 零字号标记仍在无障碍树里，读屏会把「## 」「**」「](url)」当正文念出来；
+// aria-hidden 把它们移出朗读范围。.pending/.reveal 是刻意显示给用户看的标记，保持可读。
+function syncMarkerAria(root) {
+  root.querySelectorAll('.syntax').forEach((span) => {
+    const readable = span.classList.contains('pending') || span.classList.contains('reveal');
+    span.setAttribute('aria-hidden', readable ? 'false' : 'true');
+  });
+}
+// 行内标记只在光标所在或紧邻的那一处展开；块级标记（.block-marker）永不展开。
+// 展开只改类名与 CSS，不动 DOM 文本，readBlock()/locate() 的字节映射保持逐字对齐。
+let revealedMarkers = new Set();
+function revealInlineMarkers() {
+  revealedMarkers.forEach((span) => {
+    span.classList.remove('reveal');
+    span.setAttribute('aria-hidden', span.classList.contains('pending') ? 'false' : 'true');
+  });
+  revealedMarkers = new Set();
+  if (sourceMode || document.activeElement !== editor) return;
+  const s = selection();
+  if (!s) return;
+  const focus = locate(s.f);
+  const layout = blockLayout(blockElement(focus.block.id));
+  // 富块整块切换 .block-source，不参与行内展开。
+  if (!layout) return;
+  const offsets = [focus.offset];
+  if (s.a !== s.f) {
+    const anchor = locate(s.a);
+    if (anchor.block.id === focus.block.id) offsets.push(anchor.offset);
+  }
+  for (const marker of layout.markers) {
+    if (marker.blockMarker || marker.pending) continue;
+    if (!offsets.some((offset) => offset >= marker.at && offset <= marker.end)) continue;
+    marker.span.classList.add('reveal');
+    marker.span.setAttribute('aria-hidden', 'false');
+    revealedMarkers.add(marker.span);
+  }
+}
 function updateActive() {
   const previous = lastActiveId;
   [...editor.children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
   [...$('outline').children].forEach((el) => el.classList.toggle('active', el.dataset.id === activeId));
   if (previous && previous !== activeId) refreshCodePreview(previous);
   lastActiveId = activeId;
+  revealInlineMarkers();
 }
 function updateUI() {
   const value = text();
@@ -432,7 +547,7 @@ function replace(start, end, value, cursor = start + value.length, kind = 'comma
   apply(old.slice(0, start) + value + old.slice(end), { a: cursor, f: cursor }, kind);
 }
 function range() {
-  const sel = selection() || beforeSelection || { a: text().length, f: text().length };
+  const sel = (selectAllSelection && selectAllSelection.model) || selection() || beforeSelection || { a: text().length, f: text().length };
   return { ...sel, start: Math.min(sel.a, sel.f), end: Math.max(sel.a, sel.f) };
 }
 function undo(redo = false) {
@@ -553,6 +668,200 @@ function enter(soft = false) {
 }
 function resizeSource() { source.style.height = 'auto'; source.style.height = `${Math.max(source.scrollHeight, 350)}px`; }
 
+// 隐藏标记是零字号文本（不用 display:none）：Chromium 的原生退格遇到 display:none
+// 的内联节点会把「整段隐藏标记 + 前一个可见字符」一起删掉。代价是 Home/方向键仍能把
+// 光标放进零字号文本，输入会写进标记内部（"X## 标题"），这里把插入点挪到标记之后。
+// merge 会把紧邻的隐藏标记当成一整段（"## **粗体**" 的前缀与 ** 之间没有可见字符）：
+// 只跳第一段时，紧接着的单字符删除会啃到下一段标记的第一个字符。
+function skipHiddenMarker(p, includeStart = false, merge = false) {
+  const layout = blockLayout(blockElement(p.block.id));
+  if (!layout) return p;
+  const { markers } = layout;
+  const index = markers.findIndex((marker) => marker.hidden && p.offset < marker.end && p.offset >= marker.at &&
+    (p.offset > marker.at || includeStart || (marker.at === 0 && marker.blockMarker)));
+  if (index < 0) return p;
+  let end = markers[index].end;
+  if (merge) {
+    for (let i = index + 1; i < markers.length && markers[i].hidden && markers[i].at === end; i++) end = markers[i].end;
+  }
+  return { ...p, offset: end };
+}
+// 退格要删的字符落在隐藏标记里时，把删除点左移出标记，否则原生退格会啃掉 "**粗体**" 的 "*"。
+// 连续的隐藏标记整段跳过；返回 null 表示前一个字符是可见字符，按普通退格处理。
+function visibleBackspaceStart(p) {
+  const layout = blockLayout(blockElement(p.block.id));
+  if (!layout || p.offset === 0) return null;
+  const index = layout.markers.findIndex((marker) => marker.hidden && p.offset > marker.at && p.offset <= marker.end);
+  if (index < 0) return null;
+  let at = layout.markers[index].at;
+  for (let i = index - 1; i >= 0; i--) {
+    const previous = layout.markers[i];
+    if (!previous.hidden || previous.end !== at) break;
+    at = previous.at;
+  }
+  return at;
+}
+// 块首退格＝删掉块级前缀并把该块降为正文，不删字符、不并入上一块。
+// 前缀与正文都来自 classify()/headingParts() 已有的解析结果，这里只做序列化拼接；
+// 带缩进的列表项先减少一级缩进（复用 Shift+Tab 的 indentSelection），再按块首处理。
+function demoteAtStart(p, blockStart) {
+  const block = p.block, raw = block.raw;
+  if (block.type === 'heading') {
+    const parts = headingParts(block);
+    if (parts.underline !== null) {
+      if (p.offset > 0) return false;
+      replace(blockStart, blockStart + raw.length, parts.content, blockStart, 'command');
+      return true;
+    }
+    if (!parts.prefix || p.offset > parts.prefix.length) return false;
+    replace(blockStart, blockStart + raw.length, parts.content, blockStart, 'command');
+    return true;
+  }
+  if (block.type === 'list') {
+    const task = raw.match(/^(\s*(?:[-+*]|\d+[.)])\s+)\[[ xX]\]\s/);
+    const prefix = task ? task[0] : (raw.match(/^\s*(?:[-+*]|\d+[.)])[ \t]+/)?.[0] || '');
+    if (!prefix || p.offset > prefix.length) return false;
+    if (block.indent > 0) { indentSelection(true); return true; }
+    replace(blockStart, blockStart + raw.length, raw.slice(prefix.length), blockStart, 'command');
+    return true;
+  }
+  if (block.type === 'quote') {
+    const prefix = raw.match(/^ {0,3}> ?/)?.[0] || '';
+    if (!prefix || p.offset > prefix.length) return false;
+    // 多行引用一次去掉每行的引用标记，避免部分行留成引用块。
+    replace(blockStart, blockStart + raw.length, raw.replace(/^ {0,3}>[ \t]?/gm, ''), blockStart, 'command');
+    return true;
+  }
+  if (block.type === 'footnoteDef') {
+    const { prefix, body } = footnoteDefParts(block);
+    if (!prefix || p.offset > prefix.length) return false;
+    replace(blockStart, blockStart + raw.length, body, blockStart, 'command');
+    return true;
+  }
+  return false;
+}
+// 行内解包：光标紧贴行内元素的开启标记时，删掉这一对标记、保留文字
+// （**粗体** → 粗体，[链接](url) → 链接）。标记与元素的配对直接读 renderInline()
+// 生成的 .syntax 兄弟节点，不复制一套行内解析，也不再建第二份偏移映射；
+// 编辑仍走 replace()，因此一次 Ctrl+Z 即可还原。只解最内一层，嵌套时再按一次继续。
+// Delete 不解包：可见末尾的删除按普通删除处理，不碰块尾标记。
+const INLINE_HOST_TAGS = new Set(['STRONG', 'EM', 'CODE', 'DEL', 'A']);
+
+function inlineMarkerOffsets(el) {
+  const spans = new Map();
+  const layout = blockLayout(el);
+  if (!layout) return spans;
+  for (const marker of layout.markers) if (!marker.blockMarker) spans.set(marker.span, { at: marker.at, end: marker.end });
+  return spans;
+}
+// 配对只认 .syntax 元素：相邻的普通文本节点（裸 URL 后面的尾巴文字）没有 classList，
+// 直接访问会抛 TypeError；beforeinput 里的异常会绕过 preventDefault，让原生删除啃标记。
+function markerSpan(node) {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+  if (!node.classList.contains('syntax') || node.classList.contains('block-marker')) return null;
+  return node;
+}
+// 行内代码的 `` ` x ` `` 会在标记与正文间留一个衬空空格（model.js 的 padded 分支），
+// 跳过纯空白文本并记下长度，让解包同时去掉这对衬空字符。
+function neighborNode(start, step) {
+  let node = start[step];
+  let pad = 0;
+  while (node && node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) {
+    pad += node.textContent.length;
+    node = node[step];
+  }
+  return { node, pad };
+}
+function inlineUnwrap(p, blockStart, forward) {
+  const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+  if (!el || el.classList.contains('rich-block')) return false;
+  const spans = inlineMarkerOffsets(el);
+  const raw = p.block.raw;
+  for (const [span, marker] of spans) {
+    // 前向：光标在可见文字末尾，右侧紧跟闭合标记。
+    if (forward) {
+      if (marker.at !== p.offset) continue;
+      const before = neighborNode(span, 'previousSibling');
+      if (!before.node || before.node.nodeType !== Node.ELEMENT_NODE || !INLINE_HOST_TAGS.has(before.node.tagName)) continue;
+      const open = neighborNode(before.node, 'previousSibling');
+      const openSpan = markerSpan(open.node);
+      if (!openSpan) continue;
+      const openMarker = spans.get(openSpan);
+      if (!openMarker) continue;
+      const innerStart = openMarker.end + open.pad;
+      const innerEnd = marker.at - before.pad;
+      if (innerStart > innerEnd) continue;
+      const content = raw.slice(innerStart, innerEnd);
+      replace(blockStart + openMarker.at, blockStart + marker.end, content, blockStart + openMarker.at + content.length, 'command');
+      return true;
+    }
+    // 后向：光标在可见文字起点，左侧紧跟开启标记。
+    const after = neighborNode(span, 'nextSibling');
+    if (!after.node || after.node.nodeType !== Node.ELEMENT_NODE || !INLINE_HOST_TAGS.has(after.node.tagName)) continue;
+    const innerStart = marker.end + after.pad;
+    if (innerStart !== p.offset) continue;
+    const close = neighborNode(after.node, 'nextSibling');
+    const closeSpan = markerSpan(close.node);
+    if (!closeSpan) continue;
+    const closeMarker = spans.get(closeSpan);
+    if (!closeMarker) continue;
+    const innerEnd = closeMarker.at - close.pad;
+    if (innerStart > innerEnd) continue;
+    const content = raw.slice(innerStart, innerEnd);
+    replace(blockStart + marker.at, blockStart + closeMarker.end, content, blockStart + marker.at, 'command');
+    return true;
+  }
+  return false;
+}
+// 块内可见文字末尾（模型偏移）。标记之外没有可见字符时就是块尾。
+// 脚注角标这类生成内容没有文本却有可见宽度，其前面的标记不算块尾标记；
+// 富块用源码双态，返回 null 表示不参与「光标不许停在标记之后」的收敛。
+function visibleTextEnd(el) {
+  const layout = blockLayout(el);
+  return layout ? layout.visibleEnd : null;
+}
+// 点击行尾、拖选到块尾、点击被 .reveal 展开的标记，都会把端点放进隐藏标记内部或之后。
+// 端点规则：折叠光标（点击/方向键）收敛到可见文字范围内，并且不落在标记内部；
+// 区间端点向内不切开一对标记（向外吸附到整个标记之外），但也允许停在块尾把标记一起选中，
+// 这样替换/删除不会留下半截标记。富块不参与。
+function clampSelectionToVisibleEnd(sel) {
+  if (!sel) return null;
+  const collapsed = sel.a === sel.f;
+  const start = Math.min(sel.a, sel.f);
+  const end = Math.max(sel.a, sel.f);
+  let changed = false;
+  const clamp = (value) => {
+    const p = locate(value);
+    const layout = blockLayout(blockElement(p.block.id));
+    if (!layout) return value;
+    let offset = p.offset;
+    const marker = layout.markers.find((candidate) => candidate.hidden && offset > candidate.at && offset < candidate.end);
+    if (marker) {
+      if (collapsed) offset = offset - marker.at <= marker.end - offset ? marker.at : marker.end;
+      else offset = value === start ? marker.at : marker.end;
+    }
+    // 折叠光标不越过块内最后一个可见字符；区间端点停在块尾时连同标记一起选中。
+    if (collapsed && offset > layout.visibleEnd) offset = layout.visibleEnd;
+    if (offset === p.offset) return value;
+    changed = true;
+    return value - p.offset + offset;
+  };
+  const a = clamp(sel.a), f = clamp(sel.f);
+  return changed ? { a, f } : null;
+}
+// 接管删除键：这层逻辑一旦抛异常，preventDefault 也必须执行，否则浏览器原生删除会直接
+// 啃掉零字号标记（比「这次按键没生效」严重得多）。宁可吞掉一次按键，也不静默改坏文档。
+function takeOver(event, action) {
+  let handled;
+  try {
+    handled = action();
+  } catch (error) {
+    console.warn('墨页：行内标记处理失败，已阻止浏览器原生删除', error);
+    handled = true;
+  }
+  if (handled) event.preventDefault();
+  return handled;
+}
 editor.addEventListener('beforeinput', (event) => {
   beforeSelection = selection();
   if (composing || event.isComposing) return;
@@ -561,8 +870,44 @@ editor.addEventListener('beforeinput', (event) => {
   else if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') { event.preventDefault(); undo(event.inputType === 'historyRedo'); }
   else if (s.start !== s.end && ['insertText', 'deleteContentBackward', 'deleteContentForward', 'deleteByCut'].includes(event.inputType)) {
     event.preventDefault(); replace(s.start, s.end, event.inputType === 'insertText' ? event.data || '' : '', undefined, 'typing');
+  } else if (event.inputType === 'insertText' && event.data) {
+    // 光标停在零宽标记里（Home/方向键）时，把输入挪到标记之后，避免写进 "## " 内部。
+    const p = locate(s.start);
+    const to = skipHiddenMarker(p);
+    if (to.offset !== p.offset) {
+      event.preventDefault();
+      const pos = s.start - p.offset + to.offset;
+      replace(pos, pos, event.data, undefined, 'typing');
+    }
   } else if (event.inputType === 'deleteContentBackward' || event.inputType === 'deleteContentForward') {
     const p = locate(s.start);
+    const blockStart = s.start - p.offset;
+    if (event.inputType === 'deleteContentBackward') {
+      if (takeOver(event, () => demoteAtStart(p, blockStart))) return;
+      if (takeOver(event, () => inlineUnwrap(p, blockStart))) return;
+      // 退格要删的字符落在隐藏标记里时不接管给浏览器：原生退格会啃掉标记字符。
+      const back = visibleBackspaceStart(p);
+      if (back !== null) {
+        event.preventDefault();
+        const pos = blockStart + back;
+        if (pos > 0) replace(pos - 1, pos, '', undefined, 'typing');
+        return;
+      }
+    } else {
+      // 可见末尾右侧紧跟闭合标记时，Delete 与退格对称地解包（一次一层，可撤销）。
+      if (takeOver(event, () => inlineUnwrap(p, blockStart, true))) return;
+      // 其后没有闭合标记时按普通删除处理：可见末尾之后没有可见字符，也不碰块尾标记。
+      const end = visibleTextEnd(blockElement(p.block.id));
+      if (end !== null && end < p.block.raw.length && p.offset >= end) { event.preventDefault(); return; }
+      // 前向删除落在零宽标记里时，跳过连续的隐藏标记去删第一个可见字符；没有就什么也不做。
+      const to = skipHiddenMarker(p, true, true);
+      if (to.offset !== p.offset) {
+        event.preventDefault();
+        const pos = blockStart + to.offset;
+        if (pos < blockStart + p.block.raw.length) replace(pos, pos + 1, '', undefined, 'typing');
+        return;
+      }
+    }
     if ((event.inputType === 'deleteContentBackward' && p.offset === 0 && s.start > 0) || (event.inputType === 'deleteContentForward' && p.offset === p.block.raw.length && s.start < text().length)) {
       event.preventDefault();
       const backward = event.inputType === 'deleteContentBackward';
@@ -717,11 +1062,108 @@ function indentSelection(outdent = false) {
       apply(value.slice(0, start) + body + value.slice(end), { a: Math.max(start, s.start + shiftA), f: Math.max(start, s.end + shiftF) });
     } else if (!outdent) replace(s.start, s.end, '  ');
 }
+// 隐藏标记不占可见位置：方向键一步跨过整段标记，Home 落到可见起点，
+// 否则零宽标记会变成一串「看不见的光标停顿」。光标紧邻的标记会被 .reveal
+// 显示成灰色，但它仍然是标记，方向键同样整段跨过，不落在标记内部的字符之间。
+function hiddenSpanAt(p, forward) {
+  const layout = blockLayout(blockElement(p.block.id));
+  if (!layout) return null;
+  for (const marker of layout.markers) {
+    if (!marker.hidden) continue;
+    if (forward ? (p.offset >= marker.at && p.offset < marker.end) : (p.offset > marker.at && p.offset <= marker.end)) {
+      return { at: marker.at, end: marker.end };
+    }
+  }
+  return null;
+}
+// 进入块时的可见起点：紧邻块首的连续隐藏标记（"[ ] "、"## "、"**"，或它们相邻的组合）
+// 整段跳过，否则光标会停在标记内部。
+function leadingHiddenMarker(el) {
+  const layout = blockLayout(el);
+  if (!layout) return 0;
+  let end = 0;
+  for (const marker of layout.markers) {
+    if (!marker.hidden || marker.at !== end) break;
+    end = marker.end;
+  }
+  return end;
+}
 editor.addEventListener('keydown', (event) => {
   if (composing || event.isComposing || event.keyCode === 229) return;
+  // 可见文字末尾之后没有合法光标位（行内闭合标记、闭合 #、Setext 下划线）：
+  // 右方向键（含 Shift+→ 扩选）不进入也不越过这些标记，直接落到下一块的可见起点；
+  // 已是最后一块则停在可见末尾。
+  if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key === 'ArrowRight') {
+    const sel = selection();
+    const head = sel && (event.shiftKey || sel.a === sel.f) ? sel.f : null;
+    if (head !== null) {
+      const p = locate(head);
+      const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+      const end = visibleTextEnd(el);
+      if (end !== null && end < p.block.raw.length && p.offset >= end) {
+        event.preventDefault();
+        const boundary = head - p.offset + p.block.raw.length;
+        let pos = head - p.offset + end;
+        if (boundary + 1 <= text().length) {
+          const next = locate(boundary + 1);
+          const nextEl = [...editor.children].find((n) => n.dataset.id === next.block.id);
+          pos = boundary + 1 - next.offset + leadingHiddenMarker(nextEl);
+        }
+        restore({ a: event.shiftKey ? sel.a : pos, f: pos });
+        return;
+      }
+    }
+  }
+  if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    const s = selection();
+    if (s && s.a === s.f) {
+      const p = locate(s.f);
+      // 从上一块右移进来时，浏览器会把光标停在零宽前缀的字符中间；直接落到可见起点。
+      if (event.key === 'ArrowRight' && p.offset === p.block.raw.length && s.f + 1 <= text().length) {
+        const next = locate(s.f + 1);
+        if (next.block.id !== p.block.id) {
+          const el = [...editor.children].find((n) => n.dataset.id === next.block.id);
+          const skip = leadingHiddenMarker(el);
+          if (skip) {
+            event.preventDefault();
+            const pos = s.f + 1 - next.offset + skip;
+            restore({ a: pos, f: pos });
+            return;
+          }
+        }
+      }
+      const hit = hiddenSpanAt(p, event.key === 'ArrowRight');
+      if (hit) {
+        event.preventDefault();
+        const blockStart = s.f - p.offset;
+        let pos = null;
+        if (event.key === 'ArrowRight') pos = blockStart + hit.end;
+        else if (hit.at > 0) pos = blockStart + hit.at;
+        else if (blockStart > 0) pos = blockStart - 1; // 标记在块首：直接退到上一块
+        if (pos !== null) restore({ a: pos, f: pos });
+        return;
+      }
+    }
+  }
+  if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && event.key === 'Home') {
+    const s = selection();
+    if (s && s.a === s.f) {
+      const p = locate(s.f);
+      const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+      const skip = leadingHiddenMarker(el);
+      if (skip) {
+        event.preventDefault();
+        const pos = s.f - p.offset + skip;
+        restore({ a: pos, f: pos });
+        return;
+      }
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
     event.preventDefault();
-    restore({ a: 0, f: text().length });
+    const all = { a: 0, f: text().length };
+    restore(all);
+    selectAllSelection = { model: all, dom: selection() };
     return;
   }
   if (event.key === 'Tab') {
@@ -744,12 +1186,32 @@ document.addEventListener('selectionchange', () => {
   if (composing || sourceMode || document.activeElement !== editor) return;
   const s = selection();
   if (!s) return;
+  // 点击行尾、拖选到块尾会让端点停在块尾标记之后；收敛到可见末尾，避免随后的
+  // 输入/退格写进标记内部。收敛后重新派发的 selectionchange 不会再次命中。
+  const clamped = selectAllSelection || pointerSelecting ? null : clampSelectionToVisibleEnd(s);
+  if (clamped) {
+    restore(clamped);
+    return;
+  }
+  if (selectAllSelection && (s.a !== selectAllSelection.dom.a || s.f !== selectAllSelection.dom.f)) selectAllSelection = null;
   beforeSelection = s;
   activeId = locate(s.f).block.id;
   updateActive();
 });
+// 拖选期间不改写选区：mousedown 当下就把端点吸附到标记外，会打断 Chromium 的拖选
+// （整段选区退化成折叠光标）。指针抬起后再收敛一次，拿到的是浏览器提交的最终选区。
+let pointerSelecting = false;
+editor.addEventListener('pointerdown', () => { pointerSelecting = true; });
+document.addEventListener('pointerup', () => {
+  if (!pointerSelecting) return;
+  pointerSelecting = false;
+  if (composing || sourceMode || document.activeElement !== editor) return;
+  const clamped = clampSelectionToVisibleEnd(selection());
+  if (clamped) restore(clamped);
+});
+document.addEventListener('pointercancel', () => { pointerSelecting = false; });
 editor.addEventListener('blur', () => {
-  if (!composing) { activeId = null; updateActive(); }
+  if (!composing) { activeId = null; selectAllSelection = null; updateActive(); }
 });
 document.querySelectorAll('[data-command]').forEach((button) => {
   button.addEventListener('pointerdown', (event) => { beforeSelection = selection() || beforeSelection; event.preventDefault(); });

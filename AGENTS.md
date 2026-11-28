@@ -55,7 +55,7 @@ Python 网页回归（`tests/web/*.py`）：先 `python3 -m pip install -r tests
 
 **AI 边界**（仅桌面端）。Provider 适配 OpenAI-compatible HTTP；API Key 存 `ai-provider.json`（0o600），**不得写入 `session.json` 或任何 Markdown**；文档内容作为数据而非指令发送；选区操作限于白名单动作；修改走提案 + 逐条接受，复用现有 undo/redo。
 
-**开发/测试凭据与用户配置分离**。Agent 与脚本用的测试云 API 读 `.env` 中的 `INKSTONE_AI_BASE_URL` / `INKSTONE_AI_MODEL` / `INKSTONE_AI_API_KEY`（模板见 `.env.example`，`.env` 已 gitignore）；这是独立的一套，不回写、不复用 `ai-provider.json`。测试 Key 应在服务商处限额度、可单独吊销。需要完整隔离的测试实例时，设 `INKSTONE_USER_DATA` 指向独立目录——它会同时重定向 provider 配置与 `session.json`。
+**开发/测试凭据与用户配置分离**。Agent 与脚本用的测试云 API 读 `.env` 中的 `INKSTONE_AI_BASE_URL` / `INKSTONE_AI_MODEL` / `INKSTONE_AI_API_KEY`（模板见 `.env.example`，`.env` 已 gitignore）；这是独立的一套，不回写、不复用 `ai-provider.json`。测试 Key 应在服务商处限额度、可单独吊销。需要完整隔离的测试实例时，设 `INKSTONE_USER_DATA` 指向独立目录——它会同时重定向 provider 配置与 `session.json`。验证 AI 功能时用这套变量发起真实调用，不得用 mock 冒充通过，也不读取或改写 `ai-provider.json`；`.env` 缺失或变量不全时先向维护者索取，而不是跳过 AI 验证并声称通过。真实调用保持小样本、留意额度与费用，只用自造的测试文本，不把用户真实文档发给测试模型；测试后确认 `.env` 未被提交、也未写回任何用户配置文件。
 
 **版本与发布**。版本号只在 `package.json` 的 `version`；发布标签必须 `v<version>`（如 v0.13.2）。Release 资产必须以 `-Setup.exe` 结尾，否则应用内「检查更新」无法匹配。README 顶部按版本维护修复/功能记录，与 tag 同步。
 

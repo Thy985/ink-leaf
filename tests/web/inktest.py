@@ -116,3 +116,18 @@ def load(page, raw, name="测试.md", mime="text/markdown"):
             return True
         time.sleep(0.05)
     raise TimeoutError(f"打开文件后文档未就绪：md={state.get('md')!r} toast={state.get('toast')!r}")
+
+
+def visible_text(locator):
+    """Return the block's rendered text, dropping markdown markers hidden by CSS.
+
+    Hidden markers are zero-width text (``font-size:0``), so ``innerText`` still
+    contains them; assertions about what the user actually sees use this helper.
+    """
+    return locator.evaluate(
+        """(el) => {
+          const clone = el.cloneNode(true);
+          clone.querySelectorAll('.syntax:not(.reveal):not(.pending)').forEach((n) => n.remove());
+          return clone.textContent;
+        }"""
+    )
