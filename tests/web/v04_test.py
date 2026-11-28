@@ -349,6 +349,212 @@ with sync_playwright() as playwright:
         cases.append("普通段落行首退格仍合并上一块")
         print("PASS", cases[-1], flush=True)
 
+        # 行内解包：光标贴在可见文字起点时退格，删掉一对标记并保留文字，一步可撤销。
+        inline_unwrap = [
+            ("**粗体**", 2, "粗体", "粗体"),
+            ("*斜体*", 1, "斜体", "斜体"),
+            ("`代码`", 1, "代码", "行内代码"),
+            ("` 代码 `", 2, "代码", "带衬空的行内代码"),
+            ("[链接](https://example.com)", 1, "链接", "链接"),
+            ("~~删除~~", 2, "删除", "删除线"),
+            ("__粗体__", 2, "粗体", "下划线粗体"),
+        ]
+        for source, offset, expected, label in inline_unwrap:
+            load(page, source + "\n")
+            caret(page, 0, offset)
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(120)
+            assert markdown(page) == expected + "\n", (label, markdown(page))
+            page.keyboard.press("Control+z")
+            page.wait_for_timeout(120)
+            assert markdown(page) == source + "\n", (label, "undo", markdown(page))
+            cases.append(f"行内解包：{label}，一步可撤销")
+            print("PASS", cases[-1], flush=True)
+
+        # 解包后光标留在文字之前：接着输入应出现在文字前面。
+        load(page, "**粗体**\n")
+        caret(page, 0, 2)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        page.keyboard.insert_text("新")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "新粗体\n", markdown(page)
+        cases.append("行内解包后光标停在文字前")
+
+        def selection_blocks():
+            return page.evaluate(
+                """() => {
+                  const editor = document.getElementById('editor');
+                  const info = (node) => {
+                    const el = node.nodeType === 3 ? node.parentElement : node;
+                    const block = el.closest('.block');
+                    return block ? [...editor.children].indexOf(block) : -1;
+                  };
+                  const s = getSelection();
+                  return [info(s.anchorNode), info(s.focusNode)];
+                }"""
+            )
+
+        # 可见末尾之后没有合法光标位：右方向键直接落到下一块的可见起点。
+        load(page, "- **乙**\n- 丙\n")
+        caret(page, 0, len("- **乙"))
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(80)
+        page.keyboard.insert_text("甲")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "- **乙**\n- 甲丙\n", markdown(page)
+        cases.append("块尾右移：跳过闭合标记，落到下一块可见起点")
+
+        # → 到末尾再按一次：先到下一块，再进入下一块的第一个可见字符之间。
+        load(page, "**粗体**\n\n下一段\n")
+        caret(page, 0, len("**粗体"))
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(80)
+        page.keyboard.insert_text("甲")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体**\n\n甲下一段\n", markdown(page)
+        cases.append("块尾右移两次：第二次进入下一块正文")
+
+        # 已是最后一块：右方向键停在可见末尾，不落到闭合标记之后。
+        load(page, "**粗体**")
+        caret(page, 0, len("**粗体"))
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(80)
+        page.keyboard.insert_text("尾")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体尾**", ("last", markdown(page))
+        cases.append("最后一块右移停在可见末尾")
+
+        # Shift+→ 扩选同样不越过闭合标记：焦点收敛到下一块可见起点。
+        load(page, "- **乙**\n- 丙\n")
+        caret(page, 0, len("- **乙"))
+        page.keyboard.press("Shift+ArrowRight")
+        page.wait_for_timeout(120)
+        assert selection_blocks() == [0, 1], selection_blocks()
+        assert markdown(page) == "- **乙**\n- 丙\n", markdown(page)
+        cases.append("块尾 Shift+→ 扩选不进入闭合标记")
+
+        # 点击行尾：光标收敛到可见末尾，输入落在标记之前。
+        load(page, "**粗体**\n")
+        box = page.locator("#editor .block").first.bounding_box()
+        page.mouse.click(box["x"] + box["width"] - 6, box["y"] + box["height"] / 2)
+        page.wait_for_timeout(150)
+        page.keyboard.insert_text("尾")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体尾**\n", ("click", markdown(page))
+        cases.append("点击行尾收敛到可见末尾")
+
+        # 双击选词：选区只包含可见文字，不带上两侧标记。
+        load(page, "**bold**\n")
+        page.locator("#editor strong").dblclick()
+        page.wait_for_timeout(150)
+        assert page.evaluate("() => getSelection().toString()") == "bold"
+        page.keyboard.insert_text("新")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**新**\n", ("dblclick", markdown(page))
+        cases.append("双击选词不包含标记")
+
+        # 块尾输入：追加在可见文字之后、闭合标记之前，可撤销。
+        load(page, "**粗体**\n")
+        caret(page, 0, len("**粗体"))
+        page.keyboard.insert_text("尾")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体尾**\n", ("type", markdown(page))
+        page.keyboard.press("Control+z")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体**\n", ("undo", markdown(page))
+        cases.append("块尾输入落在闭合标记之前，可撤销")
+
+        # 块尾粘贴：同样插在闭合标记之前。
+        load(page, "**粗体**\n")
+        caret(page, 0, len("**粗体"))
+        page.evaluate(
+            r"""() => {
+              const d = new DataTransfer();
+              d.setData('text/plain', '加');
+              document.getElementById('editor').dispatchEvent(
+                new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: d })
+              );
+            }"""
+        )
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体加**\n", ("paste", markdown(page))
+        cases.append("块尾粘贴落在闭合标记之前")
+
+        # 块尾退格：删掉最后一个可见字符，标记原样保留。
+        load(page, "**粗体**\n")
+        caret(page, 0, len("**粗体"))
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗**\n", ("backspace", markdown(page))
+        cases.append("块尾退格不碰标记")
+
+        # 块尾 Delete：右侧紧跟闭合标记时与退格对称解包，一步可撤销。
+        load(page, "**粗体**\n")
+        caret(page, 0, len("**粗体"))
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "粗体\n", ("delete", markdown(page))
+        page.keyboard.press("Control+z")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗体**\n", ("delete undo", markdown(page))
+        cases.append("块尾 Delete 解包，一步可撤销")
+
+        # Delete 解包一次只解一层：外层链接、内层粗体。
+        load(page, "[**粗**](https://example.com)\n")
+        caret(page, 0, len("[**粗"))
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "[粗](https://example.com)\n", ("nested", markdown(page))
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "粗\n", ("nested 2", markdown(page))
+        cases.append("块尾 Delete 解包一次解一层")
+
+        # 可见末尾之后没有闭合标记时，Delete 仍是普通删除（这里走块合并）。
+        load(page, "甲乙\n\n下一段\n")
+        caret(page, 0, len("甲乙"))
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "甲乙\n下一段\n", ("plain", markdown(page))
+        cases.append("可见末尾无闭合标记时 Delete 为普通删除")
+
+        # 光标不在可见文字的边界时仍是普通删除，不触发解包。
+        load(page, "**粗体**\n")
+        caret(page, 0, len("**粗"))
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**体**\n", markdown(page)
+        load(page, "**粗体**\n")
+        caret(page, 0, len("**粗"))
+        page.keyboard.press("Delete")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "**粗**\n", ("delete", markdown(page))
+        cases.append("行内解包：光标不在边界时不触发")
+
+        # 嵌套一次只解一层：外层链接、内层粗体，各按一次。
+        load(page, "[**粗**](https://example.com)\n")
+        caret(page, 0, len("[**"))
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "[粗](https://example.com)\n", markdown(page)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "粗\n", markdown(page)
+        cases.append("行内解包：嵌套标记一次解一层")
+
+        # 块级前缀不受影响：先解行内粗体，再按一次才降级为正文。
+        load(page, "## **粗体**\n")
+        caret(page, 0, len("## **"))
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "## 粗体\n", markdown(page)
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(120)
+        assert markdown(page) == "粗体\n", markdown(page)
+        cases.append("行内解包不触碰块级前缀")
+
         load(page, "AT&amp;T\n===")
         blur(page)
         assert "AT&T" in page.locator("#editor .heading .block-preview").inner_text()

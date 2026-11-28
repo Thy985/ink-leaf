@@ -662,6 +662,113 @@ function demoteAtStart(p, blockStart) {
   }
   return false;
 }
+// 行内解包：光标紧贴行内元素的开启标记时，删掉这一对标记、保留文字
+// （**粗体** → 粗体，[链接](url) → 链接）。标记与元素的配对直接读 renderInline()
+// 生成的 .syntax 兄弟节点，不复制一套行内解析，也不再建第二份偏移映射；
+// 编辑仍走 replace()，因此一次 Ctrl+Z 即可还原。只解最内一层，嵌套时再按一次继续。
+// Delete 不解包：可见末尾的删除按普通删除处理，不碰块尾标记。
+const INLINE_HOST_TAGS = new Set(['STRONG', 'EM', 'CODE', 'DEL', 'A']);
+
+function inlineMarkerOffsets(el) {
+  const spans = new Map();
+  let at = 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const end = at + node.textContent.length;
+    const span = node.parentElement?.closest('.syntax');
+    if (span && !span.classList.contains('block-marker')) {
+      const entry = spans.get(span);
+      if (entry) entry.end = end;
+      else spans.set(span, { at, end });
+    }
+    at = end;
+  }
+  return spans;
+}
+// 行内代码的 `` ` x ` `` 会在标记与正文间留一个衬空空格（model.js 的 padded 分支），
+// 跳过纯空白文本并记下长度，让解包同时去掉这对衬空字符。
+function neighborNode(start, step) {
+  let node = start[step];
+  let pad = 0;
+  while (node && node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) {
+    pad += node.textContent.length;
+    node = node[step];
+  }
+  return { node, pad };
+}
+function inlineUnwrap(p, blockStart, forward) {
+  const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+  if (!el || el.classList.contains('rich-block')) return false;
+  const spans = inlineMarkerOffsets(el);
+  const raw = p.block.raw;
+  for (const [span, marker] of spans) {
+    // 前向：光标在可见文字末尾，右侧紧跟闭合标记。
+    if (forward) {
+      if (marker.at !== p.offset) continue;
+      const before = neighborNode(span, 'previousSibling');
+      if (!before.node || before.node.nodeType !== Node.ELEMENT_NODE || !INLINE_HOST_TAGS.has(before.node.tagName)) continue;
+      const open = neighborNode(before.node, 'previousSibling');
+      if (!open.node || !open.node.classList.contains('syntax') || open.node.classList.contains('block-marker')) continue;
+      const openMarker = spans.get(open.node);
+      if (!openMarker) continue;
+      const innerStart = openMarker.end + open.pad;
+      const innerEnd = marker.at - before.pad;
+      if (innerStart > innerEnd) continue;
+      const content = raw.slice(innerStart, innerEnd);
+      replace(blockStart + openMarker.at, blockStart + marker.end, content, blockStart + openMarker.at + content.length, 'command');
+      return true;
+    }
+    // 后向：光标在可见文字起点，左侧紧跟开启标记。
+    const after = neighborNode(span, 'nextSibling');
+    if (!after.node || after.node.nodeType !== Node.ELEMENT_NODE || !INLINE_HOST_TAGS.has(after.node.tagName)) continue;
+    const innerStart = marker.end + after.pad;
+    if (innerStart !== p.offset) continue;
+    const close = neighborNode(after.node, 'nextSibling');
+    if (!close.node || !close.node.classList.contains('syntax') || close.node.classList.contains('block-marker')) continue;
+    const closeMarker = spans.get(close.node);
+    if (!closeMarker) continue;
+    const innerEnd = closeMarker.at - close.pad;
+    if (innerStart > innerEnd) continue;
+    const content = raw.slice(innerStart, innerEnd);
+    replace(blockStart + marker.at, blockStart + closeMarker.end, content, blockStart + marker.at, 'command');
+    return true;
+  }
+  return false;
+}
+// 块内可见文字末尾（模型偏移）。标记之外没有可见字符时就是块尾。
+// 脚注角标这类生成内容没有文本却有可见宽度，其前面的标记不算块尾标记；
+// 富块用源码双态，返回 null 表示不参与「光标不许停在标记之后」的收敛。
+function visibleTextEnd(el) {
+  if (!el || el.classList.contains('rich-block')) return null;
+  let at = 0, end = 0;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const after = at + node.textContent.length;
+    const span = node.parentElement?.closest('.syntax');
+    const generated = span?.nextElementSibling?.getClientRects().length > 0;
+    if (!span || span.classList.contains('pending') || generated) end = after;
+    at = after;
+  }
+  return end;
+}
+// 点击行尾、拖选到块尾时端点会落到块尾标记之后；这类位置收敛到可见末尾，
+// 避免随后的输入/退格写进标记内部。富块不参与。
+function clampSelectionToVisibleEnd(sel) {
+  if (!sel) return null;
+  let changed = false;
+  const clamp = (value) => {
+    const p = locate(value);
+    const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+    const end = visibleTextEnd(el);
+    if (end === null || end >= p.block.raw.length || p.offset <= end) return value;
+    changed = true;
+    return value - p.offset + end;
+  };
+  const a = clamp(sel.a), f = clamp(sel.f);
+  return changed ? { a, f } : null;
+}
 editor.addEventListener('beforeinput', (event) => {
   beforeSelection = selection();
   if (composing || event.isComposing) return;
@@ -683,7 +790,14 @@ editor.addEventListener('beforeinput', (event) => {
     const p = locate(s.start);
     if (event.inputType === 'deleteContentBackward') {
       if (demoteAtStart(p, s.start - p.offset)) { event.preventDefault(); return; }
+      if (inlineUnwrap(p, s.start - p.offset)) { event.preventDefault(); return; }
     } else {
+      // 可见末尾右侧紧跟闭合标记时，Delete 与退格对称地解包（一次一层，可撤销）。
+      if (inlineUnwrap(p, s.start - p.offset, true)) { event.preventDefault(); return; }
+      // 其后没有闭合标记时按普通删除处理：可见末尾之后没有可见字符，也不碰块尾标记。
+      const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+      const end = visibleTextEnd(el);
+      if (end !== null && end < p.block.raw.length && p.offset >= end) { event.preventDefault(); return; }
       // 前向删除落在零宽标记里时，跳过标记去删第一个可见字符；没有可见字符就什么也不做。
       const to = skipHiddenMarker(p, true);
       if (to.offset !== p.offset) {
@@ -848,7 +962,8 @@ function indentSelection(outdent = false) {
     } else if (!outdent) replace(s.start, s.end, '  ');
 }
 // 隐藏标记不占可见位置：方向键一步跨过整段标记，Home 落到可见起点，
-// 否则零宽标记会变成一串「看不见的光标停顿」。
+// 否则零宽标记会变成一串「看不见的光标停顿」。光标紧邻的标记会被 .reveal
+// 显示成灰色，但它仍然是标记，方向键同样整段跨过，不落在标记内部的字符之间。
 function hiddenSpanAt(p, forward) {
   const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
   if (!el || el.classList.contains('rich-block')) return null;
@@ -858,7 +973,7 @@ function hiddenSpanAt(p, forward) {
   while ((node = walker.nextNode())) {
     const end = at + node.textContent.length;
     const span = node.parentElement?.closest('.syntax');
-    if (span && !span.classList.contains('reveal') && !span.classList.contains('pending') &&
+    if (span && !span.classList.contains('pending') &&
       (forward ? (p.offset >= at && p.offset < end) : (p.offset > at && p.offset <= end))) {
       return { at, end };
     }
@@ -879,6 +994,30 @@ function leadingHiddenMarker(el) {
 }
 editor.addEventListener('keydown', (event) => {
   if (composing || event.isComposing || event.keyCode === 229) return;
+  // 可见文字末尾之后没有合法光标位（行内闭合标记、闭合 #、Setext 下划线）：
+  // 右方向键（含 Shift+→ 扩选）不进入也不越过这些标记，直接落到下一块的可见起点；
+  // 已是最后一块则停在可见末尾。
+  if (!event.altKey && !event.ctrlKey && !event.metaKey && event.key === 'ArrowRight') {
+    const sel = selection();
+    const head = sel && (event.shiftKey || sel.a === sel.f) ? sel.f : null;
+    if (head !== null) {
+      const p = locate(head);
+      const el = [...editor.children].find((n) => n.dataset.id === p.block.id);
+      const end = visibleTextEnd(el);
+      if (end !== null && end < p.block.raw.length && p.offset >= end) {
+        event.preventDefault();
+        const boundary = head - p.offset + p.block.raw.length;
+        let pos = head - p.offset + end;
+        if (boundary + 1 <= text().length) {
+          const next = locate(boundary + 1);
+          const nextEl = [...editor.children].find((n) => n.dataset.id === next.block.id);
+          pos = boundary + 1 - next.offset + leadingHiddenMarker(nextEl);
+        }
+        restore({ a: event.shiftKey ? sel.a : pos, f: pos });
+        return;
+      }
+    }
+  }
   if (!event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
     const s = selection();
     if (s && s.a === s.f) {
@@ -951,6 +1090,13 @@ document.addEventListener('selectionchange', () => {
   if (composing || sourceMode || document.activeElement !== editor) return;
   const s = selection();
   if (!s) return;
+  // 点击行尾、拖选到块尾会让端点停在块尾标记之后；收敛到可见末尾，避免随后的
+  // 输入/退格写进标记内部。收敛后重新派发的 selectionchange 不会再次命中。
+  const clamped = selectAllSelection ? null : clampSelectionToVisibleEnd(s);
+  if (clamped) {
+    restore(clamped);
+    return;
+  }
   if (selectAllSelection && (s.a !== selectAllSelection.dom.a || s.f !== selectAllSelection.dom.f)) selectAllSelection = null;
   beforeSelection = s;
   activeId = locate(s.f).block.id;
